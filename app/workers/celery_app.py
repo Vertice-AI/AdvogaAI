@@ -15,6 +15,10 @@ celery_app.conf.update(
             "task": "workers.verificar_saude_uazapi",
             "schedule": 300.0,  # 5 minutos (CLAUDE.md §4.7)
         },
+        "enviar-notificacoes-pendentes": {
+            "task": "workers.enviar_notificacoes_pendentes",
+            "schedule": 300.0,  # 5 minutos
+        },
     },
 )
 
