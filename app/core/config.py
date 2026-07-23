@@ -13,5 +13,8 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+psycopg://advogai_app:advogai_app@localhost:5432/advogai"
 
+    redis_url: str = "redis://localhost:6379/0"
+    process_provider: str = "datajud"
+
 
 settings = Settings()

@@ -12,6 +12,8 @@ dependencies = [
     "sqlalchemy>=2.0",
     "psycopg[binary]>=3.2",
     "alembic>=1.13",
+    "celery>=5.4",
+    "redis>=5.0",
 ]
 
 [project.optional-dependencies]
@@ -20,6 +22,7 @@ dev = [
     "pytest-asyncio>=0.24",
     "mypy>=1.13",
     "ruff>=0.7",
+    "celery-types>=0.22",
 ]
 
 [build-system]

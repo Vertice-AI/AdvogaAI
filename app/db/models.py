@@ -20,11 +20,23 @@ from app.db.base import Base
 
 class Tenant(Base):
     __tablename__ = "tenant"
-    __table_args__ = (CheckConstraint("plano IN ('solo', 'escritorio')", name="ck_tenant_plano"),)
+    __table_args__ = (
+        CheckConstraint("plano IN ('solo', 'escritorio')", name="ck_tenant_plano"),
+        CheckConstraint(
+            "nivel_autonomia_padrao IN ('automatico', 'aprovacao_manual')",
+            name="ck_tenant_nivel_autonomia_padrao",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     nome: Mapped[str] = mapped_column(String(200))
     plano: Mapped[str] = mapped_column(String(20))
+    # Usado pelo worker de sincronização (app/workers/sync_processual.py) até
+    # existir granularidade por cliente/categoria de movimento (CLAUDE.md §4.3).
+    # 'aprovacao_manual' é o default seguro.
+    nivel_autonomia_padrao: Mapped[str] = mapped_column(
+        String(20), server_default="aprovacao_manual"
+    )
     criado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -68,6 +80,11 @@ class Processo(Base):
 
 class Movimento(Base):
     __tablename__ = "movimento"
+    # Deduplicação do worker de sincronização: o provider devolve a lista
+    # inteira de movimentos a cada chamada, não só os novos (app/workers/sync_processual.py).
+    __table_args__ = (
+        UniqueConstraint("processo_id", "data", "tipo", "texto_origem", name="uq_movimento_dedupe"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenant.id"))
