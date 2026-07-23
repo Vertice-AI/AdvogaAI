@@ -11,5 +11,7 @@ class Settings(BaseSettings):
     datajud_api_key: str = ""
     datajud_base_url: str = "https://api-publica.datajud.cnj.jus.br"
 
+    database_url: str = "postgresql+psycopg://advogai_app:advogai_app@localhost:5432/advogai"
+
 
 settings = Settings()

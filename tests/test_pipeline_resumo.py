@@ -1,8 +1,18 @@
 import json
 from pathlib import Path
 
+from sqlalchemy import Engine
+from sqlalchemy.orm import Session
+
 from app.agents.processual import ProcessualAgent
-from app.services.pipeline_resumo import DecisaoEnvio, NivelAutonomia, processar_movimento
+from app.db.models import Cliente, Processo, Tenant
+from app.db.rls import definir_tenant
+from app.services.pipeline_resumo import (
+    DecisaoEnvio,
+    NivelAutonomia,
+    processar_e_persistir_movimento,
+    processar_movimento,
+)
 
 _FIXTURES_DIR = Path(__file__).parent / "fixtures" / "movimentos"
 
@@ -78,3 +88,84 @@ async def test_resumo_que_viola_guardrail_e_bloqueado():
 
     assert resultado.decisao == DecisaoEnvio.BLOCKED
     assert resultado.guardrail is not None and not resultado.guardrail.passed
+
+
+def _criar_processo(session: Session) -> Processo:
+    tenant = Tenant(nome="Escritorio Teste", plano="solo")
+    session.add(tenant)
+    session.flush()
+    # cliente/processo são protegidos por RLS (tenant não é) — precisa
+    # definir o tenant antes de inserir qualquer linha nessas tabelas.
+    definir_tenant(session, tenant.id)
+    cliente = Cliente(tenant_id=tenant.id, nome="Cliente Teste", whatsapp_numero="5511999998888")
+    session.add(cliente)
+    session.flush()
+    processo = Processo(
+        tenant_id=tenant.id,
+        cliente_id=cliente.id,
+        numero="0000832-35.2018.4.01.3202",
+        tribunal_alias="trf1",
+    )
+    session.add(processo)
+    session.flush()
+    return processo
+
+
+async def test_processar_e_persistir_grava_movimento_relevante(db_engine: Engine):
+    movimento_bruto = _carregar_fixture("despacho_com_decisao.json")
+    resumo_valido = (
+        "Em 10/07/2026, o juiz deferiu o pedido de tutela de urgência, "
+        "suspendendo a cobrança até nova decisão."
+    )
+    agent = _agent(relevante=True, resumo=resumo_valido)
+
+    with Session(db_engine, expire_on_commit=False) as session:
+        processo = _criar_processo(session)
+        definir_tenant(session, processo.tenant_id)
+
+        movimento_salvo = await processar_e_persistir_movimento(
+            movimento_bruto,
+            agent,
+            NivelAutonomia.APROVACAO_MANUAL,
+            session,
+            processo.tenant_id,
+            processo.id,
+        )
+        session.commit()
+
+    with Session(db_engine, expire_on_commit=False) as session:
+        definir_tenant(session, processo.tenant_id)
+        do_banco = session.get(type(movimento_salvo), movimento_salvo.id)
+        assert do_banco is not None
+        assert do_banco.relevante
+        assert do_banco.resumo == resumo_valido
+        assert do_banco.guardrail_passou
+        assert do_banco.decisao == DecisaoEnvio.NEEDS_APPROVAL.value
+        assert do_banco.processo_id == processo.id
+
+
+async def test_processar_e_persistir_grava_movimento_irrelevante_sem_resumo(db_engine: Engine):
+    movimento_bruto = _carregar_fixture("conclusao_interna.json")
+    agent = _agent(relevante=False, resumo="não deveria ser usado")
+
+    with Session(db_engine, expire_on_commit=False) as session:
+        processo = _criar_processo(session)
+        definir_tenant(session, processo.tenant_id)
+
+        movimento_salvo = await processar_e_persistir_movimento(
+            movimento_bruto,
+            agent,
+            NivelAutonomia.AUTOMATICO,
+            session,
+            processo.tenant_id,
+            processo.id,
+        )
+        session.commit()
+
+    with Session(db_engine, expire_on_commit=False) as session:
+        definir_tenant(session, processo.tenant_id)
+        do_banco = session.get(type(movimento_salvo), movimento_salvo.id)
+        assert do_banco is not None
+        assert not do_banco.relevante
+        assert do_banco.resumo is None
+        assert do_banco.decisao == DecisaoEnvio.BLOCKED.value
