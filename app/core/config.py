@@ -16,5 +16,10 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     process_provider: str = "datajud"
 
+    channel_provider: str = "uazapi"
+    uazapi_base_url: str = ""
+    uazapi_token: str = ""
+    uazapi_webhook_secret: str = ""
+
 
 settings = Settings()

@@ -11,6 +11,10 @@ celery_app.conf.update(
             "task": "workers.sincronizar_processos",
             "schedule": crontab(hour=3, minute=0),
         },
+        "verificar-saude-uazapi": {
+            "task": "workers.verificar_saude_uazapi",
+            "schedule": 300.0,  # 5 minutos (CLAUDE.md §4.7)
+        },
     },
 )
 
