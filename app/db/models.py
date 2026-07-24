@@ -132,3 +132,22 @@ class ConversaEstado(Base):
     atendimento_humano_desde: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # True enquanto a próxima mensagem desse número deve ser interpretada
+    # como os dados de vinculação (nome/CPF/processo), não como uma nova
+    # pergunta (app/services/atendimento.py).
+    aguardando_dados_vinculo: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class SolicitacaoVinculo(Base):
+    __tablename__ = "solicitacao_vinculo"
+    # Registro do que a pessoa informou pra pedir vínculo — nunca usado pelo
+    # agente pra liberar informação sozinho (CLAUDE.md §4.6, "sem exceção").
+    # Só serve de contexto pro advogado decidir e vincular manualmente.
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenant.id"))
+    whatsapp_numero: Mapped[str] = mapped_column(String(20))
+    nome_informado: Mapped[str] = mapped_column(String(200))
+    cpf_informado: Mapped[str] = mapped_column(String(11))
+    numero_processo_informado: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    criado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

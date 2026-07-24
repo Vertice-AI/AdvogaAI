@@ -7,7 +7,15 @@ from sqlalchemy.orm import Session
 
 from app.agents.atendimento import AtendimentoAgent
 from app.channels.base import InboundMessage, MessageId
-from app.db.models import Advogado, Cliente, ConversaEstado, Movimento, Processo, Tenant
+from app.db.models import (
+    Advogado,
+    Cliente,
+    ConversaEstado,
+    Movimento,
+    Processo,
+    SolicitacaoVinculo,
+    Tenant,
+)
 from app.db.rls import definir_tenant
 from app.services.atendimento import processar_mensagem
 
@@ -200,7 +208,9 @@ async def test_consulta_processo_sem_movimento_avisa_sem_atualizacao(db_engine: 
     assert "ainda não há atualização registrada" in channel.enviados[0][1]
 
 
-async def test_consulta_processo_numero_nao_vinculado_nunca_da_info(db_engine: Engine) -> None:
+async def test_consulta_processo_numero_nao_vinculado_nunca_da_info_e_inicia_coleta(
+    db_engine: Engine,
+) -> None:
     channel = _ChannelFake()
     with Session(db_engine, expire_on_commit=False) as session:
         tenant = _criar_tenant(session)
@@ -213,6 +223,110 @@ async def test_consulta_processo_numero_nao_vinculado_nunca_da_info(db_engine: E
 
     texto = channel.enviados[0][1]
     assert "não está vinculado" in texto
+    assert "Nome:" in texto and "CPF:" in texto
+
+    with Session(db_engine, expire_on_commit=False) as session:
+        definir_tenant(session, tenant_id)
+        estado = session.scalar(
+            select(ConversaEstado).where(
+                ConversaEstado.tenant_id == tenant_id, ConversaEstado.whatsapp_numero == _NUMERO
+            )
+        )
+        assert estado is not None
+        assert estado.aguardando_dados_vinculo is True
+
+
+async def test_dados_vinculo_validos_criam_solicitacao_e_notificam_advogados(
+    db_engine: Engine,
+) -> None:
+    channel = _ChannelFake()
+    numero_advogado = "5511988887777"
+    with Session(db_engine, expire_on_commit=False) as session:
+        tenant = _criar_tenant(session)
+        tenant_id = tenant.id
+        session.add(
+            Advogado(
+                tenant_id=tenant_id,
+                nome="Dra. Ana",
+                area_atuacao="Cível",
+                whatsapp_numero=numero_advogado,
+            )
+        )
+        session.add(
+            ConversaEstado(
+                tenant_id=tenant_id,
+                whatsapp_numero=_NUMERO,
+                ultima_saudacao_em=datetime.now(UTC),
+                aguardando_dados_vinculo=True,
+            )
+        )
+        session.commit()
+
+        texto_dados = (
+            "Nome: João da Silva\nCPF: 123.456.789-00\nProcesso: 0000832-35.2018.4.01.3202"
+        )
+        await processar_mensagem(session, channel, _agent(), tenant_id, _inbound(texto_dados))
+
+    assert any(destino == numero_advogado for destino, _ in channel.enviados)
+    mensagem_advogado = next(
+        texto for destino, texto in channel.enviados if destino == numero_advogado
+    )
+    assert "João da Silva" in mensagem_advogado
+    assert "12345678900" in mensagem_advogado
+    assert "0000832-35.2018.4.01.3202" in mensagem_advogado
+    assert any(destino == _NUMERO for destino, _ in channel.enviados)
+
+    with Session(db_engine, expire_on_commit=False) as session:
+        definir_tenant(session, tenant_id)
+        estado = session.scalar(
+            select(ConversaEstado).where(
+                ConversaEstado.tenant_id == tenant_id, ConversaEstado.whatsapp_numero == _NUMERO
+            )
+        )
+        assert estado is not None
+        assert estado.aguardando_dados_vinculo is False
+        assert estado.atendimento_humano_desde is not None
+
+        solicitacao = session.scalar(
+            select(SolicitacaoVinculo).where(SolicitacaoVinculo.tenant_id == tenant_id)
+        )
+        assert solicitacao is not None
+        assert solicitacao.nome_informado == "João da Silva"
+        assert solicitacao.cpf_informado == "12345678900"
+        assert solicitacao.numero_processo_informado == "0000832-35.2018.4.01.3202"
+
+
+async def test_dados_vinculo_invalidos_pede_para_reenviar_e_continua_aguardando(
+    db_engine: Engine,
+) -> None:
+    channel = _ChannelFake()
+    with Session(db_engine, expire_on_commit=False) as session:
+        tenant = _criar_tenant(session)
+        tenant_id = tenant.id
+        session.add(
+            ConversaEstado(
+                tenant_id=tenant_id,
+                whatsapp_numero=_NUMERO,
+                ultima_saudacao_em=datetime.now(UTC),
+                aguardando_dados_vinculo=True,
+            )
+        )
+        session.commit()
+
+        await processar_mensagem(session, channel, _agent(), tenant_id, _inbound("oi, sou eu"))
+
+    assert "Não consegui identificar" in channel.enviados[0][1]
+
+    with Session(db_engine, expire_on_commit=False) as session:
+        definir_tenant(session, tenant_id)
+        estado = session.scalar(
+            select(ConversaEstado).where(
+                ConversaEstado.tenant_id == tenant_id, ConversaEstado.whatsapp_numero == _NUMERO
+            )
+        )
+        assert estado is not None
+        assert estado.aguardando_dados_vinculo is True
+        assert estado.atendimento_humano_desde is None
 
 
 async def test_consulta_processo_lista_todos_quando_ha_mais_de_um(db_engine: Engine) -> None:
