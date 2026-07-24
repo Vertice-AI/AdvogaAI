@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.channels.base import ChannelProvider
 from app.db.models import Advogado, Cliente, Processo, SolicitacaoAtendimento
+from app.db.rls import definir_tenant
 
 logger = structlog.get_logger()
 
@@ -54,29 +55,34 @@ async def rotear_solicitacao_atendimento(
         return None
 
     resumo = _montar_resumo_caso(cliente, processo, texto_motivador)
-    status = (
-        StatusSolicitacaoAtendimento.NOTIFICADO
-        if advogado.disponivel
-        else StatusSolicitacaoAtendimento.AGUARDANDO
-    )
+    # Sempre grava como "aguardando" primeiro e só promove pra "notificado"
+    # depois do envio confirmar sucesso — se o envio falhar (UAZAPI fora do
+    # ar), a solicitação não pode ficar marcada como entregue sem ter sido
+    # (CLAUDE.md §4.7, "fila que segura o envio em vez de descartar").
     solicitacao = SolicitacaoAtendimento(
         tenant_id=tenant_id,
         whatsapp_numero=numero,
         cliente_id=cliente.id if cliente is not None else None,
         advogado_designado_id=advogado.id,
         resumo_caso=resumo,
-        status=status.value,
-        notificado_em=datetime.now(UTC)
-        if status == StatusSolicitacaoAtendimento.NOTIFICADO
-        else None,
+        status=StatusSolicitacaoAtendimento.AGUARDANDO.value,
     )
     session.add(solicitacao)
     session.commit()
 
-    if status == StatusSolicitacaoAtendimento.NOTIFICADO:
-        await channel.send_text(advogado.whatsapp_numero, resumo)
+    if not advogado.disponivel:
+        return StatusSolicitacaoAtendimento.AGUARDANDO
 
-    return status
+    await channel.send_text(advogado.whatsapp_numero, resumo)
+
+    # definir_tenant de novo: o commit acima encerrou a transação que tinha
+    # o tenant setado (skill escrever-com-rls-advogai).
+    definir_tenant(session, tenant_id)
+    solicitacao.status = StatusSolicitacaoAtendimento.NOTIFICADO.value
+    solicitacao.notificado_em = datetime.now(UTC)
+    session.commit()
+
+    return StatusSolicitacaoAtendimento.NOTIFICADO
 
 
 async def notificar_proxima_solicitacao(
@@ -98,10 +104,15 @@ async def notificar_proxima_solicitacao(
     if solicitacao is None:
         return
 
+    # Envia antes de marcar como notificado, mesmo motivo de
+    # rotear_solicitacao_atendimento: não registrar entrega que não
+    # aconteceu. Sem commit entre a busca e o envio, o tenant da transação
+    # atual (definido por quem chamou) continua válido pro commit abaixo.
+    await channel.send_text(advogado.whatsapp_numero, solicitacao.resumo_caso)
+
     solicitacao.status = StatusSolicitacaoAtendimento.NOTIFICADO.value
     solicitacao.notificado_em = datetime.now(UTC)
     session.commit()
-    await channel.send_text(advogado.whatsapp_numero, solicitacao.resumo_caso)
 
 
 def _processo_advogado_responsavel(

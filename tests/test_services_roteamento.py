@@ -30,6 +30,22 @@ class _ChannelFake:
         raise NotImplementedError
 
 
+class _ChannelQueCai:
+    """Simula a UAZAPI fora do ar: send_text sempre falha."""
+
+    async def send_text(self, to: str, text: str) -> MessageId:
+        raise ConnectionError("instância UAZAPI indisponível")
+
+    async def send_template(self, to: str, template: str, params: dict[str, str]) -> MessageId:
+        raise NotImplementedError
+
+    def parse_webhook(self, payload: dict[str, object]) -> InboundMessage:
+        raise NotImplementedError
+
+    def verify_signature(self, payload: bytes, headers: dict[str, str]) -> bool:
+        raise NotImplementedError
+
+
 def _criar_tenant_com_advogado(
     session: Session, *, disponivel: bool = True
 ) -> tuple[uuid.UUID, Advogado]:
@@ -101,6 +117,31 @@ async def test_processo_sem_advogado_responsavel_cai_no_fallback(db_engine: Engi
     assert status == StatusSolicitacaoAtendimento.NOTIFICADO
     mensagem_advogado = next(t for d, t in channel.enviados if d == _NUMERO_ADVOGADO)
     assert "Cliente Sem Advogado" in mensagem_advogado
+
+
+async def test_falha_no_envio_nao_marca_como_notificado(db_engine: Engine) -> None:
+    channel = _ChannelQueCai()
+    with Session(db_engine, expire_on_commit=False) as session:
+        tenant_id, _ = _criar_tenant_com_advogado(session)
+
+        try:
+            await rotear_solicitacao_atendimento(
+                session, channel, tenant_id, _NUMERO_PROSPECT, "quero falar"
+            )
+            raised = False
+        except ConnectionError:
+            raised = True
+
+    assert raised
+
+    with Session(db_engine, expire_on_commit=False) as session:
+        definir_tenant(session, tenant_id)
+        solicitacao = session.scalar(
+            select(SolicitacaoAtendimento).where(SolicitacaoAtendimento.tenant_id == tenant_id)
+        )
+        assert solicitacao is not None
+        assert solicitacao.status == "aguardando"
+        assert solicitacao.notificado_em is None
 
 
 async def test_tenant_sem_advogado_cadastrado_nao_quebra_e_nao_cria_solicitacao(
