@@ -335,3 +335,41 @@ async def test_mensagem_do_advogado_sem_comando_e_ignorada(db_engine: Engine) ->
         )
         assert estado is not None
         assert estado.atendimento_humano_desde is not None  # continua em modo humano
+
+
+async def test_mensagem_do_numero_do_advogado_vira_comando_nao_conversa_de_cliente(
+    db_engine: Engine,
+) -> None:
+    channel = _ChannelFake()
+    numero_advogado = "5511988887777"
+    with Session(db_engine, expire_on_commit=False) as session:
+        tenant = _criar_tenant(session)
+        tenant_id = tenant.id
+        session.add(
+            Advogado(
+                tenant_id=tenant_id,
+                nome="Dra. Ana",
+                area_atuacao="Cível",
+                whatsapp_numero=numero_advogado,
+            )
+        )
+        session.commit()
+
+        # Primeiro contato desse número: se fosse tratado como cliente, cairia
+        # na saudação. Sendo advogado cadastrado, cai direto no comando.
+        await processar_mensagem(
+            session, channel, _agent(), tenant_id, _inbound("oi", numero=numero_advogado)
+        )
+
+    assert len(channel.enviados) == 1
+    assert "Não entendi" in channel.enviados[0][1]  # "oi" não é aprovar/rejeitar
+
+    with Session(db_engine, expire_on_commit=False) as session:
+        definir_tenant(session, tenant_id)
+        estado = session.scalar(
+            select(ConversaEstado).where(
+                ConversaEstado.tenant_id == tenant_id,
+                ConversaEstado.whatsapp_numero == numero_advogado,
+            )
+        )
+        assert estado is None  # nenhuma saudação/menu de cliente foi criada

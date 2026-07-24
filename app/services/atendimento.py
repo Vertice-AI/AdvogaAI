@@ -9,6 +9,7 @@ from app.agents.atendimento import AtendimentoAgent, Intencao
 from app.channels.base import ChannelProvider, InboundMessage
 from app.db.models import Advogado, Cliente, ConversaEstado, Movimento, Processo
 from app.db.rls import definir_tenant
+from app.services.aprovacoes import advogado_por_numero, processar_comando_advogado
 
 logger = structlog.get_logger()
 
@@ -27,6 +28,13 @@ async def processar_mensagem(
 
     if inbound.from_me:
         await _processar_mensagem_do_advogado(session, tenant_id, inbound)
+        return
+
+    advogado = advogado_por_numero(session, tenant_id, inbound.from_number)
+    if advogado is not None:
+        # Número pessoal de um advogado cadastrado: trata como comando de
+        # aprovação, nunca como conversa de cliente (app/services/aprovacoes.py).
+        await processar_comando_advogado(session, channel, tenant_id, advogado, inbound)
         return
 
     estado = _obter_ou_criar_conversa_estado(session, tenant_id, inbound.from_number)

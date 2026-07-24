@@ -57,11 +57,18 @@ class Cliente(Base):
 
 class Advogado(Base):
     __tablename__ = "advogado"
+    # Número pessoal do advogado (não o número do escritório que fala com os
+    # clientes) — usado pra pedir aprovação de movimentos needs_approval e
+    # reconhecer o comando de resposta (app/services/aprovacoes.py).
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "whatsapp_numero", name="uq_advogado_tenant_whatsapp"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenant.id"))
     nome: Mapped[str] = mapped_column(String(200))
     oab: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    whatsapp_numero: Mapped[str | None] = mapped_column(String(20), nullable=True)
     area_atuacao: Mapped[str] = mapped_column(String(100))
     disponivel: Mapped[bool] = mapped_column(Boolean, default=True)
 
@@ -99,6 +106,11 @@ class Movimento(Base):
     decisao: Mapped[str] = mapped_column(String(20))
     criado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     enviado_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Marca que já pedimos aprovação ao advogado responsável (evita pedir de
+    # novo a cada execução do job) — só relevante quando decisao=needs_approval.
+    aprovacao_solicitada_em: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class ConversaEstado(Base):
