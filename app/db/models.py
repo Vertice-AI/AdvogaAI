@@ -151,3 +151,6 @@ class SolicitacaoVinculo(Base):
     cpf_informado: Mapped[str] = mapped_column(String(11))
     numero_processo_informado: Mapped[str | None] = mapped_column(String(30), nullable=True)
     criado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Preenchido quando o advogado resolve via comando "vincular"/"descartar"
+    # (app/services/aprovacoes.py) — evita reprocessar a mesma solicitação.
+    resolvida_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
