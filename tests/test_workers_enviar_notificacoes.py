@@ -1,5 +1,5 @@
 import uuid
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session
@@ -98,7 +98,7 @@ async def test_nao_reenvia_movimento_ja_enviado(db_engine: Engine) -> None:
             session,
             decisao=DecisaoEnvio.AUTO_SEND,
             resumo="Já foi enviado antes.",
-            enviado_em=datetime.now(timezone.utc),
+            enviado_em=datetime.now(UTC),
         )
 
         await enviar_notificacoes_do_tenant(session, channel, tenant_id)

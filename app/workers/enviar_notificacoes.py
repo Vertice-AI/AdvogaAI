@@ -1,6 +1,6 @@
 import asyncio
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import structlog
 from sqlalchemy import select
@@ -55,7 +55,7 @@ async def enviar_notificacoes_do_tenant(
     for movimento_id, numero, resumo in itens:
         try:
             await enviar_notificacao(session, channel, tenant_id, movimento_id, numero, resumo)
-        except Exception:
+        except Exception:  # noqa: BLE001 — isola falha de 1 notificação sem derrubar as demais do tenant
             session.rollback()
             logger.error(
                 "envio_notificacao_falhou", tenant_id=str(tenant_id), movimento_id=str(movimento_id)
@@ -79,6 +79,6 @@ async def enviar_notificacao(
     movimento = session.get(Movimento, movimento_id)
     if movimento is None:
         raise RuntimeError(f"movimento {movimento_id} sumiu entre a leitura e o envio")
-    movimento.enviado_em = datetime.now(timezone.utc)
+    movimento.enviado_em = datetime.now(UTC)
     session.commit()
     logger.info("notificacao_enviada", tenant_id=str(tenant_id), movimento_id=str(movimento_id))

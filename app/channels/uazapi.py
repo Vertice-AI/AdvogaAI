@@ -2,7 +2,7 @@ import asyncio
 import hmac
 import random
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, cast
 
 import httpx
@@ -57,7 +57,10 @@ class UazapiProvider:
 
         dados = payload.get("data")
         if not isinstance(dados, dict):
-            raise ValueError("payload de webhook sem campo 'data'")
+            # ValueError (não TypeError) de propósito: é o mesmo tipo de erro
+            # das outras validações desta função, e quem chama (app/api/webhooks.py)
+            # trata tudo como payload malformado/inesperado com um único except ValueError.
+            raise ValueError("payload de webhook sem campo 'data'")  # noqa: TRY004
 
         numero = _extrair_numero(str(dados.get("sender") or dados.get("chatid") or ""))
         timestamp_ms = dados.get("messageTimestamp")
@@ -70,7 +73,8 @@ class UazapiProvider:
             from_number=numero,
             text=str(dados.get("text") or ""),
             message_id=str(dados.get("messageid") or dados.get("id") or ""),
-            timestamp=datetime.fromtimestamp(int(timestamp_ms) / 1000, tz=timezone.utc),
+            timestamp=datetime.fromtimestamp(int(timestamp_ms) / 1000, tz=UTC),
+            from_me=bool(dados.get("fromMe", False)),
         )
 
     def verify_signature(self, payload: bytes, headers: dict[str, str]) -> bool:

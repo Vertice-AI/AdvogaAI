@@ -11,6 +11,11 @@ class InboundMessage:
     text: str
     message_id: str
     timestamp: datetime
+    # True quando a mensagem foi enviada pelo próprio número do escritório
+    # (o advogado respondendo direto no WhatsApp) — distingue do cliente
+    # falando. Usado pela regra do silêncio (CLAUDE.md §4.5): só o comando
+    # /ia vindo com from_me=True reativa a IA numa conversa em modo humano.
+    from_me: bool
 
 
 class ChannelProvider(Protocol):

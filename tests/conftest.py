@@ -24,10 +24,9 @@ def db_engine() -> Iterator[Engine]:
 
 
 def _recriar_banco_de_teste() -> None:
-    with psycopg.connect(_ADMIN_URL, autocommit=True) as conn:
-        with conn.cursor() as cur:
-            cur.execute(f"DROP DATABASE IF EXISTS {_TEST_DB} WITH (FORCE)")
-            cur.execute(f"CREATE DATABASE {_TEST_DB}")
+    with psycopg.connect(_ADMIN_URL, autocommit=True) as conn, conn.cursor() as cur:
+        cur.execute(f"DROP DATABASE IF EXISTS {_TEST_DB} WITH (FORCE)")
+        cur.execute(f"CREATE DATABASE {_TEST_DB}")
 
 
 def _rodar_migrations() -> None:

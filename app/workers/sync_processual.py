@@ -63,7 +63,7 @@ async def sincronizar_tenant(
             await sincronizar_processo(
                 session, provider, agent, tenant_id, processo, nivel_autonomia
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 — isola falha de 1 processo sem derrubar os demais do tenant
             session.rollback()
             logger.error(
                 "sync_processo_falhou", tenant_id=str(tenant_id), processo_id=str(processo_id)

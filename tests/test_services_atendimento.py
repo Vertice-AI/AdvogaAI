@@ -1,0 +1,337 @@
+import json
+import uuid
+from datetime import UTC, date, datetime
+
+from sqlalchemy import Engine, select
+from sqlalchemy.orm import Session
+
+from app.agents.atendimento import AtendimentoAgent
+from app.channels.base import InboundMessage, MessageId
+from app.db.models import Advogado, Cliente, ConversaEstado, Movimento, Processo, Tenant
+from app.db.rls import definir_tenant
+from app.services.atendimento import processar_mensagem
+
+_NUMERO = "5511999997777"
+
+
+class _ChannelFake:
+    def __init__(self) -> None:
+        self.enviados: list[tuple[str, str]] = []
+
+    async def send_text(self, to: str, text: str) -> MessageId:
+        self.enviados.append((to, text))
+        return "MSG-FAKE"
+
+    async def send_template(self, to: str, template: str, params: dict[str, str]) -> MessageId:
+        raise NotImplementedError
+
+    def parse_webhook(self, payload: dict[str, object]) -> InboundMessage:
+        raise NotImplementedError
+
+    def verify_signature(self, payload: bytes, headers: dict[str, str]) -> bool:
+        raise NotImplementedError
+
+
+class _AnthropicClientFake:
+    def __init__(self, intencao: str) -> None:
+        self._intencao = intencao
+
+    async def create_message(self, *, system: str, user: str, model: str, max_tokens: int) -> str:
+        return json.dumps({"intencao": self._intencao})
+
+
+def _agent(intencao: str = "outro") -> AtendimentoAgent:
+    return AtendimentoAgent(_AnthropicClientFake(intencao), haiku_model="haiku-fake")
+
+
+def _inbound(text: str, *, from_me: bool = False, numero: str = _NUMERO) -> InboundMessage:
+    return InboundMessage(
+        from_number=numero,
+        text=text,
+        message_id="msg-1",
+        timestamp=datetime.now(UTC),
+        from_me=from_me,
+    )
+
+
+def _criar_tenant(session: Session) -> Tenant:
+    tenant = Tenant(nome="Escritorio Teste", plano="solo")
+    session.add(tenant)
+    session.flush()
+    definir_tenant(session, tenant.id)
+    return tenant
+
+
+def _criar_estado_ja_saudado(
+    session: Session, tenant_id: uuid.UUID, numero: str = _NUMERO, *, humano: bool = False
+) -> None:
+    session.add(
+        ConversaEstado(
+            tenant_id=tenant_id,
+            whatsapp_numero=numero,
+            ultima_saudacao_em=datetime.now(UTC),
+            atendimento_humano_desde=datetime.now(UTC) if humano else None,
+        )
+    )
+    session.commit()
+
+
+async def test_primeiro_contato_numero_desconhecido_envia_saudacao_generica(
+    db_engine: Engine,
+) -> None:
+    channel = _ChannelFake()
+    with Session(db_engine, expire_on_commit=False) as session:
+        tenant = _criar_tenant(session)
+        tenant_id = tenant.id
+        session.commit()
+
+        await processar_mensagem(session, channel, _agent(), tenant_id, _inbound("oi"))
+
+    assert len(channel.enviados) == 1
+    destino, texto = channel.enviados[0]
+    assert destino == _NUMERO
+    assert "assistente de IA do escritório" in texto
+    assert "Consultar atualização" in texto
+
+    with Session(db_engine, expire_on_commit=False) as session:
+        definir_tenant(session, tenant_id)
+        estado = session.scalar(
+            select(ConversaEstado).where(
+                ConversaEstado.tenant_id == tenant_id, ConversaEstado.whatsapp_numero == _NUMERO
+            )
+        )
+        assert estado is not None
+        assert estado.ultima_saudacao_em is not None
+
+
+async def test_primeiro_contato_cliente_conhecido_personaliza_saudacao(db_engine: Engine) -> None:
+    channel = _ChannelFake()
+    with Session(db_engine, expire_on_commit=False) as session:
+        tenant = _criar_tenant(session)
+        tenant_id = tenant.id
+        advogado = Advogado(
+            tenant_id=tenant_id, nome="Dra. Ana Souza", oab="123456", area_atuacao="Cível"
+        )
+        session.add(advogado)
+        session.flush()
+        cliente = Cliente(tenant_id=tenant_id, nome="Cliente Teste", whatsapp_numero=_NUMERO)
+        session.add(cliente)
+        session.flush()
+        processo = Processo(
+            tenant_id=tenant_id,
+            cliente_id=cliente.id,
+            numero="0000832-35.2018.4.01.3202",
+            tribunal_alias="trf1",
+            advogado_responsavel_id=advogado.id,
+        )
+        session.add(processo)
+        session.commit()
+
+        await processar_mensagem(session, channel, _agent(), tenant_id, _inbound("oi"))
+
+    texto = channel.enviados[0][1]
+    assert "Dra. Ana Souza" in texto
+    assert "OAB 123456" in texto
+
+
+async def test_consulta_processo_com_movimento_responde_resumo(db_engine: Engine) -> None:
+    channel = _ChannelFake()
+    with Session(db_engine, expire_on_commit=False) as session:
+        tenant = _criar_tenant(session)
+        tenant_id = tenant.id
+        cliente = Cliente(tenant_id=tenant_id, nome="Cliente Teste", whatsapp_numero=_NUMERO)
+        session.add(cliente)
+        session.flush()
+        processo = Processo(
+            tenant_id=tenant_id,
+            cliente_id=cliente.id,
+            numero="0000832-35.2018.4.01.3202",
+            tribunal_alias="trf1",
+        )
+        session.add(processo)
+        session.flush()
+        session.add(
+            Movimento(
+                tenant_id=tenant_id,
+                processo_id=processo.id,
+                data=date(2026, 7, 10),
+                tipo="Decisão",
+                texto_origem="Defiro o pedido.",
+                relevante=True,
+                resumo="Em 10/07/2026, o juiz deferiu o pedido.",
+                guardrail_passou=True,
+                decisao="auto_send",
+            )
+        )
+        _criar_estado_ja_saudado(session, tenant_id)
+
+        await processar_mensagem(
+            session, channel, _agent("consultar_processo"), tenant_id, _inbound("2")
+        )
+
+    destino, texto = channel.enviados[0]
+    assert destino == _NUMERO
+    assert "0000832-35.2018.4.01.3202" in texto
+    assert "Em 10/07/2026, o juiz deferiu o pedido." in texto
+
+
+async def test_consulta_processo_sem_movimento_avisa_sem_atualizacao(db_engine: Engine) -> None:
+    channel = _ChannelFake()
+    with Session(db_engine, expire_on_commit=False) as session:
+        tenant = _criar_tenant(session)
+        tenant_id = tenant.id
+        cliente = Cliente(tenant_id=tenant_id, nome="Cliente Teste", whatsapp_numero=_NUMERO)
+        session.add(cliente)
+        session.flush()
+        session.add(
+            Processo(
+                tenant_id=tenant_id,
+                cliente_id=cliente.id,
+                numero="0000111-11.2024.8.26.0100",
+                tribunal_alias="tjsp",
+            )
+        )
+        _criar_estado_ja_saudado(session, tenant_id)
+
+        await processar_mensagem(
+            session, channel, _agent("consultar_processo"), tenant_id, _inbound("1")
+        )
+
+    assert "ainda não há atualização registrada" in channel.enviados[0][1]
+
+
+async def test_consulta_processo_numero_nao_vinculado_nunca_da_info(db_engine: Engine) -> None:
+    channel = _ChannelFake()
+    with Session(db_engine, expire_on_commit=False) as session:
+        tenant = _criar_tenant(session)
+        tenant_id = tenant.id
+        _criar_estado_ja_saudado(session, tenant_id)
+
+        await processar_mensagem(
+            session, channel, _agent("consultar_processo"), tenant_id, _inbound("1")
+        )
+
+    texto = channel.enviados[0][1]
+    assert "não está vinculado" in texto
+
+
+async def test_consulta_processo_lista_todos_quando_ha_mais_de_um(db_engine: Engine) -> None:
+    channel = _ChannelFake()
+    with Session(db_engine, expire_on_commit=False) as session:
+        tenant = _criar_tenant(session)
+        tenant_id = tenant.id
+        cliente = Cliente(tenant_id=tenant_id, nome="Cliente Teste", whatsapp_numero=_NUMERO)
+        session.add(cliente)
+        session.flush()
+        session.add_all(
+            [
+                Processo(
+                    tenant_id=tenant_id,
+                    cliente_id=cliente.id,
+                    numero="0000111-11.2024.8.26.0100",
+                    tribunal_alias="tjsp",
+                ),
+                Processo(
+                    tenant_id=tenant_id,
+                    cliente_id=cliente.id,
+                    numero="0000222-22.2024.8.26.0100",
+                    tribunal_alias="tjsp",
+                ),
+            ]
+        )
+        _criar_estado_ja_saudado(session, tenant_id)
+
+        await processar_mensagem(
+            session, channel, _agent("consultar_processo"), tenant_id, _inbound("1")
+        )
+
+    texto = channel.enviados[0][1]
+    assert "0000111-11.2024.8.26.0100" in texto
+    assert "0000222-22.2024.8.26.0100" in texto
+
+
+async def test_falar_advogado_ativa_modo_humano(db_engine: Engine) -> None:
+    channel = _ChannelFake()
+    with Session(db_engine, expire_on_commit=False) as session:
+        tenant = _criar_tenant(session)
+        tenant_id = tenant.id
+        _criar_estado_ja_saudado(session, tenant_id)
+
+        await processar_mensagem(
+            session, channel, _agent("falar_advogado"), tenant_id, _inbound("2")
+        )
+
+    assert len(channel.enviados) == 1
+    assert "advogado" in channel.enviados[0][1].lower()
+
+    with Session(db_engine, expire_on_commit=False) as session:
+        definir_tenant(session, tenant_id)
+        estado = session.scalar(
+            select(ConversaEstado).where(
+                ConversaEstado.tenant_id == tenant_id, ConversaEstado.whatsapp_numero == _NUMERO
+            )
+        )
+        assert estado is not None
+        assert estado.atendimento_humano_desde is not None
+
+
+async def test_modo_humano_ativo_ia_fica_em_silencio(db_engine: Engine) -> None:
+    channel = _ChannelFake()
+    with Session(db_engine, expire_on_commit=False) as session:
+        tenant = _criar_tenant(session)
+        tenant_id = tenant.id
+        _criar_estado_ja_saudado(session, tenant_id, humano=True)
+
+        await processar_mensagem(
+            session, channel, _agent("consultar_processo"), tenant_id, _inbound("oi, tudo bem?")
+        )
+
+    assert channel.enviados == []
+
+
+async def test_comando_ia_do_proprio_numero_reativa_ia(db_engine: Engine) -> None:
+    channel = _ChannelFake()
+    with Session(db_engine, expire_on_commit=False) as session:
+        tenant = _criar_tenant(session)
+        tenant_id = tenant.id
+        _criar_estado_ja_saudado(session, tenant_id, humano=True)
+
+        await processar_mensagem(
+            session, channel, _agent(), tenant_id, _inbound("/ia", from_me=True)
+        )
+
+    assert channel.enviados == []  # comando não gera resposta ao cliente
+
+    with Session(db_engine, expire_on_commit=False) as session:
+        definir_tenant(session, tenant_id)
+        estado = session.scalar(
+            select(ConversaEstado).where(
+                ConversaEstado.tenant_id == tenant_id, ConversaEstado.whatsapp_numero == _NUMERO
+            )
+        )
+        assert estado is not None
+        assert estado.atendimento_humano_desde is None
+
+
+async def test_mensagem_do_advogado_sem_comando_e_ignorada(db_engine: Engine) -> None:
+    channel = _ChannelFake()
+    with Session(db_engine, expire_on_commit=False) as session:
+        tenant = _criar_tenant(session)
+        tenant_id = tenant.id
+        _criar_estado_ja_saudado(session, tenant_id, humano=True)
+
+        await processar_mensagem(
+            session, channel, _agent(), tenant_id, _inbound("beleza, já te ajudo", from_me=True)
+        )
+
+    assert channel.enviados == []
+
+    with Session(db_engine, expire_on_commit=False) as session:
+        definir_tenant(session, tenant_id)
+        estado = session.scalar(
+            select(ConversaEstado).where(
+                ConversaEstado.tenant_id == tenant_id, ConversaEstado.whatsapp_numero == _NUMERO
+            )
+        )
+        assert estado is not None
+        assert estado.atendimento_humano_desde is not None  # continua em modo humano

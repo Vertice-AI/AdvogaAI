@@ -61,6 +61,7 @@ class Advogado(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenant.id"))
     nome: Mapped[str] = mapped_column(String(200))
+    oab: Mapped[str | None] = mapped_column(String(20), nullable=True)
     area_atuacao: Mapped[str] = mapped_column(String(100))
     disponivel: Mapped[bool] = mapped_column(Boolean, default=True)
 
@@ -98,3 +99,24 @@ class Movimento(Base):
     decisao: Mapped[str] = mapped_column(String(20))
     criado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     enviado_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ConversaEstado(Base):
+    __tablename__ = "conversa_estado"
+    # Não referencia Cliente de propósito: a saudação diária e a regra do
+    # silêncio (CLAUDE.md §4.5) valem também para números ainda não
+    # vinculados a nenhum Cliente (§4.6) — o estado é por número, não por
+    # cadastro.
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "whatsapp_numero", name="uq_conversa_estado_tenant_whatsapp"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenant.id"))
+    whatsapp_numero: Mapped[str] = mapped_column(String(20))
+    ultima_saudacao_em: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    atendimento_humano_desde: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )

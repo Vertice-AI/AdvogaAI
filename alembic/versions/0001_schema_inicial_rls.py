@@ -6,16 +6,17 @@ Create Date: 2026-07-22
 """
 
 import os
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects import postgresql
 
+from alembic import op
+
 revision: str = "0001"
-down_revision: Union[str, None] = None
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = None
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 # Tabelas de negócio: toda linha pertence a um tenant e a policy abaixo
 # garante que a query só enxerga o tenant setado em app.tenant_id na sessão

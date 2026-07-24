@@ -1,7 +1,7 @@
 import asyncio
 import json
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -104,8 +104,28 @@ async def test_parse_webhook_mensagem_valida() -> None:
 
     assert inbound.from_number == "5511999998888"
     assert inbound.text == "Como está meu processo?"
+    assert inbound.from_me is False
     assert inbound.message_id == "3EB0ABC123"
-    assert inbound.timestamp == datetime.fromtimestamp(1752192000000 / 1000, tz=timezone.utc)
+    assert inbound.timestamp == datetime.fromtimestamp(1752192000000 / 1000, tz=UTC)
+
+
+async def test_parse_webhook_mensagem_do_proprio_numero_marca_from_me() -> None:
+    payload = {
+        "event": "messages",
+        "instance": "inst-123",
+        "data": {
+            "sender": "5511999998888@s.whatsapp.net",
+            "chatid": "5511999998888@s.whatsapp.net",
+            "text": "/ia",
+            "messageid": "3EB0DEF456",
+            "messageTimestamp": 1752192000000,
+            "fromMe": True,
+        },
+    }
+
+    inbound = _provider(lambda r: httpx.Response(200)).parse_webhook(payload)
+
+    assert inbound.from_me is True
 
 
 async def test_parse_webhook_evento_diferente_de_messages_levanta_erro() -> None:

@@ -14,6 +14,8 @@ dependencies = [
     "alembic>=1.13",
     "celery>=5.4",
     "redis>=5.0",
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
 ]
 
 [project.optional-dependencies]
