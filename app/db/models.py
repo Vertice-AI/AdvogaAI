@@ -154,3 +154,26 @@ class SolicitacaoVinculo(Base):
     # Preenchido quando o advogado resolve via comando "vincular"/"descartar"
     # (app/services/aprovacoes.py) — evita reprocessar a mesma solicitação.
     resolvida_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SolicitacaoAtendimento(Base):
+    __tablename__ = "solicitacao_atendimento"
+    # Fila do roteamento de "falar com advogado" (app/services/roteamento.py).
+    # advogado_designado_id não é nullable: no modelo Solo (1 advogado por
+    # tenant) ele sempre é conhecido na criação — não existe "aguardando
+    # decidir quem". Se status="aguardando", é porque esse advogado está
+    # indisponível no momento, não porque falta escolher alguém.
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenant.id"))
+    whatsapp_numero: Mapped[str] = mapped_column(String(20))
+    cliente_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("cliente.id"), nullable=True
+    )
+    advogado_designado_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("advogado.id")
+    )
+    resumo_caso: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20))
+    criado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    notificado_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

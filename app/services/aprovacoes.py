@@ -8,10 +8,12 @@ from app.channels.base import ChannelProvider, InboundMessage
 from app.db.models import Advogado, Cliente, ConversaEstado, Movimento, Processo, SolicitacaoVinculo
 from app.db.rls import definir_tenant
 from app.services.pipeline_resumo import DecisaoEnvio
+from app.services.roteamento import notificar_proxima_solicitacao
 
 _TAMANHO_CODIGO = 6
 _ACOES_MOVIMENTO = {"aprovar": DecisaoEnvio.AUTO_SEND, "rejeitar": DecisaoEnvio.BLOCKED}
 _VERBOS_VINCULO = {"vincular", "descartar"}
+_VERBOS_DISPONIBILIDADE = {"disponivel": True, "indisponivel": False}
 
 
 def codigo_curto(entidade_id: uuid.UUID) -> str:
@@ -46,11 +48,16 @@ async def processar_comando_advogado(
         await _processar_comando_vinculo(
             session, channel, tenant_id, numero_advogado, verbo, partes
         )
+    elif verbo in _VERBOS_DISPONIBILIDADE:
+        await _processar_comando_disponibilidade(
+            session, channel, tenant_id, advogado, numero_advogado, _VERBOS_DISPONIBILIDADE[verbo]
+        )
     else:
         await channel.send_text(
             numero_advogado,
-            "Não entendi. Responda 'aprovar/rejeitar <código>' (movimentação pendente) "
-            "ou 'vincular/descartar <código>' (solicitação de contato).",
+            "Não entendi. Responda 'aprovar/rejeitar <código>' (movimentação pendente), "
+            "'vincular/descartar <código>' (solicitação de contato) ou "
+            "'disponivel'/'indisponivel' (atualizar sua disponibilidade).",
         )
 
 
@@ -230,6 +237,26 @@ async def _encerrar_modo_humano(session: Session, tenant_id: uuid.UUID, numero: 
     if estado is not None:
         estado.atendimento_humano_desde = None
         session.commit()
+
+
+async def _processar_comando_disponibilidade(
+    session: Session,
+    channel: ChannelProvider,
+    tenant_id: uuid.UUID,
+    advogado: Advogado,
+    numero_advogado: str,
+    disponivel: bool,
+) -> None:
+    advogado.disponivel = disponivel
+    session.commit()
+    situacao = "disponível" if disponivel else "indisponível"
+    await channel.send_text(numero_advogado, f"Você está marcado como {situacao}.")
+
+    if disponivel:
+        # definir_tenant de novo: o commit acima encerrou a transação que
+        # tinha o tenant setado (skill escrever-com-rls-advogai).
+        definir_tenant(session, tenant_id)
+        await notificar_proxima_solicitacao(session, channel, tenant_id, advogado)
 
 
 def _buscar_solicitacao_por_codigo(

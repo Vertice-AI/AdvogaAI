@@ -11,6 +11,7 @@ from app.db.models import (
     ConversaEstado,
     Movimento,
     Processo,
+    SolicitacaoAtendimento,
     SolicitacaoVinculo,
     Tenant,
 )
@@ -374,6 +375,70 @@ async def test_vincular_processo_nao_cadastrado(db_engine: Engine) -> None:
         )
 
     assert "Não encontrei o processo" in channel.enviados[0][1]
+
+
+async def test_comando_indisponivel_marca_advogado_e_nao_notifica_ninguem(
+    db_engine: Engine,
+) -> None:
+    channel = _ChannelFake()
+    with Session(db_engine, expire_on_commit=False) as session:
+        tenant_id, advogado, _ = _criar_cenario(session)
+
+        await processar_comando_advogado(
+            session, channel, tenant_id, advogado, _inbound("indisponivel")
+        )
+
+    assert len(channel.enviados) == 1
+    assert "indisponível" in channel.enviados[0][1].lower()
+
+    with Session(db_engine, expire_on_commit=False) as session:
+        definir_tenant(session, tenant_id)
+        atualizado = session.get(Advogado, advogado.id)
+        assert atualizado is not None
+        assert atualizado.disponivel is False
+
+
+async def test_comando_disponivel_marca_advogado_e_notifica_solicitacao_mais_antiga(
+    db_engine: Engine,
+) -> None:
+    channel = _ChannelFake()
+    with Session(db_engine, expire_on_commit=False) as session:
+        tenant_id, advogado, _ = _criar_cenario(session)
+        advogado.disponivel = False
+        session.add(
+            SolicitacaoAtendimento(
+                tenant_id=tenant_id,
+                whatsapp_numero="5511911112222",
+                advogado_designado_id=advogado.id,
+                resumo_caso="Cliente quer falar com você pelo WhatsApp.\nNome: não identificado",
+                status="aguardando",
+            )
+        )
+        session.commit()
+        definir_tenant(session, tenant_id)
+        criada = session.scalar(
+            select(SolicitacaoAtendimento).where(SolicitacaoAtendimento.tenant_id == tenant_id)
+        )
+        assert criada is not None
+        solicitacao_id = criada.id
+
+        await processar_comando_advogado(
+            session, channel, tenant_id, advogado, _inbound("disponivel")
+        )
+
+    mensagem_confirmacao = channel.enviados[0]
+    assert mensagem_confirmacao[0] == _NUMERO_ADVOGADO
+    assert "disponível" in mensagem_confirmacao[1].lower()
+
+    mensagem_resumo = next(t for d, t in channel.enviados[1:] if d == _NUMERO_ADVOGADO)
+    assert "Cliente quer falar com você" in mensagem_resumo
+
+    with Session(db_engine, expire_on_commit=False) as session:
+        definir_tenant(session, tenant_id)
+        solicitacao = session.get(SolicitacaoAtendimento, solicitacao_id)
+        assert solicitacao is not None
+        assert solicitacao.status == "notificado"
+        assert solicitacao.notificado_em is not None
 
 
 async def test_vincular_codigo_desconhecido(db_engine: Engine) -> None:

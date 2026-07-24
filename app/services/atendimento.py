@@ -11,6 +11,11 @@ from app.channels.base import ChannelProvider, InboundMessage
 from app.db.models import Advogado, Cliente, ConversaEstado, Movimento, Processo, SolicitacaoVinculo
 from app.db.rls import definir_tenant
 from app.services.aprovacoes import advogado_por_numero, processar_comando_advogado
+from app.services.roteamento import (
+    StatusSolicitacaoAtendimento,
+    advogado_do_cliente,
+    rotear_solicitacao_atendimento,
+)
 
 logger = structlog.get_logger()
 
@@ -70,11 +75,23 @@ async def processar_mensagem(
         # silêncio não pode falhar por falta desse dado.
         estado.atendimento_humano_desde = datetime.now(UTC)
         session.commit()
-        await channel.send_text(
-            inbound.from_number,
-            "Certo! Vou te colocar em contato com o advogado responsável — "
-            "a partir de agora ele(a) continua essa conversa por aqui.",
+        # definir_tenant é SET LOCAL — o commit acima encerrou a transação que
+        # tinha o tenant setado (skill escrever-com-rls-advogai).
+        definir_tenant(session, tenant_id)
+        status = await rotear_solicitacao_atendimento(
+            session, channel, tenant_id, inbound.from_number, inbound.text
         )
+        if status == StatusSolicitacaoAtendimento.NOTIFICADO:
+            texto_resposta = (
+                "Certo! Vou te colocar em contato com o advogado responsável — "
+                "a partir de agora ele(a) continua essa conversa por aqui."
+            )
+        else:
+            texto_resposta = (
+                "Certo! O advogado responsável está indisponível no momento — "
+                "assim que ele(a) voltar, vai continuar essa conversa por aqui."
+            )
+        await channel.send_text(inbound.from_number, texto_resposta)
     else:
         await channel.send_text(inbound.from_number, "Não entendi essa opção." + _MENU_TEXTO)
 
@@ -117,7 +134,7 @@ async def _enviar_saudacao(
     cliente = session.scalar(
         select(Cliente).where(Cliente.tenant_id == tenant_id, Cliente.whatsapp_numero == numero)
     )
-    advogado = _advogado_do_cliente(session, cliente) if cliente is not None else None
+    advogado = advogado_do_cliente(session, cliente) if cliente is not None else None
 
     if advogado is not None:
         oab = f" (OAB {advogado.oab})" if advogado.oab else ""
@@ -128,17 +145,6 @@ async def _enviar_saudacao(
         saudacao = "Olá! Sou o assistente de IA do escritório e estou aqui para ajudar."
 
     await channel.send_text(numero, saudacao + _MENU_TEXTO)
-
-
-def _advogado_do_cliente(session: Session, cliente: Cliente) -> Advogado | None:
-    processo = session.scalar(
-        select(Processo)
-        .where(Processo.cliente_id == cliente.id, Processo.advogado_responsavel_id.is_not(None))
-        .limit(1)
-    )
-    if processo is None or processo.advogado_responsavel_id is None:
-        return None
-    return session.get(Advogado, processo.advogado_responsavel_id)
 
 
 async def _responder_consulta_processo(

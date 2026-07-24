@@ -13,6 +13,7 @@ from app.db.models import (
     ConversaEstado,
     Movimento,
     Processo,
+    SolicitacaoAtendimento,
     SolicitacaoVinculo,
     Tenant,
 )
@@ -387,6 +388,102 @@ async def test_falar_advogado_ativa_modo_humano(db_engine: Engine) -> None:
         )
         assert estado is not None
         assert estado.atendimento_humano_desde is not None
+
+
+_NUMERO_ADVOGADO = "5511988887777"
+
+
+async def test_falar_advogado_disponivel_notifica_advogado_com_resumo(db_engine: Engine) -> None:
+    channel = _ChannelFake()
+    with Session(db_engine, expire_on_commit=False) as session:
+        tenant = _criar_tenant(session)
+        tenant_id = tenant.id
+        advogado = Advogado(
+            tenant_id=tenant_id,
+            nome="Dra. Ana",
+            area_atuacao="Cível",
+            whatsapp_numero=_NUMERO_ADVOGADO,
+            disponivel=True,
+        )
+        session.add(advogado)
+        session.flush()
+        advogado_id = advogado.id
+        cliente = Cliente(tenant_id=tenant_id, nome="Cliente Teste", whatsapp_numero=_NUMERO)
+        session.add(cliente)
+        session.flush()
+        session.add(
+            Processo(
+                tenant_id=tenant_id,
+                cliente_id=cliente.id,
+                numero="0000832-35.2018.4.01.3202",
+                tribunal_alias="trf1",
+                advogado_responsavel_id=advogado_id,
+            )
+        )
+        session.commit()
+        definir_tenant(session, tenant_id)
+        _criar_estado_ja_saudado(session, tenant_id)
+
+        await processar_mensagem(
+            session,
+            channel,
+            _agent("falar_advogado"),
+            tenant_id,
+            _inbound("quero falar sobre meu processo"),
+        )
+
+    mensagem_advogado = next(t for d, t in channel.enviados if d == _NUMERO_ADVOGADO)
+    assert "0000832-35.2018.4.01.3202" in mensagem_advogado
+    assert "Cliente Teste" in mensagem_advogado
+    assert "quero falar sobre meu processo" in mensagem_advogado
+
+    mensagem_cliente = next(t for d, t in channel.enviados if d == _NUMERO)
+    assert "continua essa conversa" in mensagem_cliente
+
+    with Session(db_engine, expire_on_commit=False) as session:
+        definir_tenant(session, tenant_id)
+        solicitacao = session.scalar(
+            select(SolicitacaoAtendimento).where(SolicitacaoAtendimento.tenant_id == tenant_id)
+        )
+        assert solicitacao is not None
+        assert solicitacao.status == "notificado"
+        assert solicitacao.advogado_designado_id == advogado_id
+        assert solicitacao.notificado_em is not None
+
+
+async def test_falar_advogado_indisponivel_enfileira_sem_notificar(db_engine: Engine) -> None:
+    channel = _ChannelFake()
+    with Session(db_engine, expire_on_commit=False) as session:
+        tenant = _criar_tenant(session)
+        tenant_id = tenant.id
+        advogado = Advogado(
+            tenant_id=tenant_id,
+            nome="Dr. João",
+            area_atuacao="Cível",
+            whatsapp_numero=_NUMERO_ADVOGADO,
+            disponivel=False,
+        )
+        session.add(advogado)
+        session.commit()
+        definir_tenant(session, tenant_id)
+        _criar_estado_ja_saudado(session, tenant_id)
+
+        await processar_mensagem(
+            session, channel, _agent("falar_advogado"), tenant_id, _inbound("2")
+        )
+
+    assert len(channel.enviados) == 1
+    assert channel.enviados[0][0] == _NUMERO
+    assert "indisponível" in channel.enviados[0][1].lower()
+
+    with Session(db_engine, expire_on_commit=False) as session:
+        definir_tenant(session, tenant_id)
+        solicitacao = session.scalar(
+            select(SolicitacaoAtendimento).where(SolicitacaoAtendimento.tenant_id == tenant_id)
+        )
+        assert solicitacao is not None
+        assert solicitacao.status == "aguardando"
+        assert solicitacao.notificado_em is None
 
 
 async def test_modo_humano_ativo_ia_fica_em_silencio(db_engine: Engine) -> None:
