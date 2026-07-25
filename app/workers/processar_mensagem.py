@@ -1,8 +1,12 @@
+from __future__ import annotations
+
 import asyncio
 import uuid
 from datetime import datetime
 
 import structlog
+from celery import Task
+from celery.exceptions import Retry
 
 from app.agents.atendimento import AtendimentoAgent
 from app.agents.processual import AnthropicMessagesClient
@@ -15,9 +19,13 @@ from app.workers.celery_app import celery_app
 
 logger = structlog.get_logger()
 
+_MAX_TENTATIVAS = 5
+_BACKOFF_BASE_SEGUNDOS = 10
 
-@celery_app.task(name="workers.processar_mensagem_recebida")
+
+@celery_app.task(name="workers.processar_mensagem_recebida", bind=True, max_retries=_MAX_TENTATIVAS)
 def processar_mensagem_recebida(
+    self: Task[..., None],
     tenant_id: str,
     from_number: str,
     text: str,
@@ -25,11 +33,29 @@ def processar_mensagem_recebida(
     timestamp_iso: str,
     from_me: bool,
 ) -> None:
-    asyncio.run(
-        _processar_mensagem_recebida_async(
-            tenant_id, from_number, text, message_id, timestamp_iso, from_me
+    try:
+        asyncio.run(
+            _processar_mensagem_recebida_async(
+                tenant_id, from_number, text, message_id, timestamp_iso, from_me
+            )
         )
-    )
+    except Exception as erro:  # noqa: BLE001 — decide entre retry (fila segura o envio, CLAUDE.md §4.7) e desistir
+        try:
+            raise self.retry(
+                exc=erro, countdown=_BACKOFF_BASE_SEGUNDOS * (2**self.request.retries)
+            ) from erro
+        except Retry:
+            raise
+        except Exception:
+            # self.retry() com exc= definido relança o próprio `erro` (não
+            # MaxRetriesExceededError) quando as tentativas se esgotam —
+            # qualquer coisa que não seja Retry aqui significa "desistiu".
+            logger.error(
+                "processar_mensagem_falhou_definitivamente",
+                tenant_id=tenant_id,
+                message_id=message_id,
+            )
+            raise
 
 
 async def _processar_mensagem_recebida_async(
@@ -55,8 +81,8 @@ async def _processar_mensagem_recebida_async(
     session = SessionLocal()
     try:
         await processar_mensagem(session, channel, agent, uuid.UUID(tenant_id), inbound)
-    except Exception:  # noqa: BLE001 — task de fila: loga e desiste da mensagem em vez de derrubar o worker
+    except Exception:
         session.rollback()
-        logger.error("processar_mensagem_falhou", tenant_id=tenant_id, message_id=message_id)
+        raise
     finally:
         session.close()

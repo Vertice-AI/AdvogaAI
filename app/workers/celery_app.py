@@ -23,6 +23,10 @@ celery_app.conf.update(
             "task": "workers.solicitar_aprovacoes_pendentes",
             "schedule": 300.0,  # 5 minutos
         },
+        "retomar-solicitacoes-pendentes": {
+            "task": "workers.retomar_solicitacoes_pendentes",
+            "schedule": 300.0,  # 5 minutos
+        },
     },
 )
 

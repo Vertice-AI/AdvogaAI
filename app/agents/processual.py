@@ -8,10 +8,14 @@ from anthropic import AsyncAnthropic
 from app.services.normalizacao import MovimentoNormalizado
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
+_TIMEOUT_SEGUNDOS = 30.0
+_MAX_TENTATIVAS = 3
 
 
 class AnthropicClient(Protocol):
-    async def create_message(self, *, system: str, user: str, model: str, max_tokens: int) -> str: ...
+    async def create_message(
+        self, *, system: str, user: str, model: str, max_tokens: int
+    ) -> str: ...
 
 
 @dataclass(frozen=True)
@@ -25,10 +29,14 @@ class ProcessualAgent:
         self._client = client
         self._haiku_model = haiku_model
         self._sonnet_model = sonnet_model
-        self._prompt_relevancia = (_PROMPTS_DIR / "relevancia_system.md").read_text(encoding="utf-8")
+        self._prompt_relevancia = (_PROMPTS_DIR / "relevancia_system.md").read_text(
+            encoding="utf-8"
+        )
         self._prompt_resumo = (_PROMPTS_DIR / "resumo_system.md").read_text(encoding="utf-8")
 
-    async def classificar_relevancia(self, movimento: MovimentoNormalizado) -> RelevanciaClassificacao:
+    async def classificar_relevancia(
+        self, movimento: MovimentoNormalizado
+    ) -> RelevanciaClassificacao:
         resposta = await self._client.create_message(
             system=self._prompt_relevancia,
             user=_montar_input_movimento(movimento),
@@ -36,7 +44,9 @@ class ProcessualAgent:
             max_tokens=200,
         )
         dados = json.loads(resposta)
-        return RelevanciaClassificacao(relevante=bool(dados["relevante"]), motivo=str(dados["motivo"]))
+        return RelevanciaClassificacao(
+            relevante=bool(dados["relevante"]), motivo=str(dados["motivo"])
+        )
 
     async def resumir(self, movimento: MovimentoNormalizado) -> str:
         return await self._client.create_message(
@@ -49,7 +59,12 @@ class ProcessualAgent:
 
 class AnthropicMessagesClient:
     def __init__(self, api_key: str) -> None:
-        self._client = AsyncAnthropic(api_key=api_key)
+        # CLAUDE.md §6: timeout e retry explícitos, não o default implícito
+        # do SDK — mesmo padrão de UazapiProvider/DataJudProvider (o SDK já
+        # faz o backoff exponencial internamente, não precisa reescrever).
+        self._client = AsyncAnthropic(
+            api_key=api_key, timeout=_TIMEOUT_SEGUNDOS, max_retries=_MAX_TENTATIVAS
+        )
 
     async def create_message(self, *, system: str, user: str, model: str, max_tokens: int) -> str:
         resposta = await self._client.messages.create(
