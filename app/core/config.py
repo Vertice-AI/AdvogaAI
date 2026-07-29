@@ -21,5 +21,11 @@ class Settings(BaseSettings):
     uazapi_token: str = ""
     uazapi_webhook_secret: str = ""
 
+    # Webhook fora-de-banda pra alertas operacionais (queda da instância
+    # UAZAPI). Formato {"text": ...} — Slack/Discord/Mattermost. Vazio = alerta
+    # vira no-op (dev/local). Fora-de-banda de propósito (CLAUDE.md §4.7): o
+    # alerta não pode depender do WhatsApp que ele está monitorando.
+    alert_webhook_url: str = ""
+
 
 settings = Settings()

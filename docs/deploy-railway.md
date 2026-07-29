@@ -96,6 +96,11 @@ ADVOGAI_UAZAPI_WEBHOOK_SECRET=<gere um segredo forte; vai no ?secret= do webhook
 # Fonte de dados processuais (DataJud público, gratuito)
 ADVOGAI_PROCESS_PROVIDER=datajud
 # ADVOGAI_DATAJUD_API_KEY=  # opcional agora; só necessário quando testar o sync real da Dor 1
+
+# Alerta fora-de-banda quando a instância UAZAPI cai (Slack/Discord/Mattermost
+# incoming webhook, formato {"text": ...}). Vazio = sem alerta (só log).
+# Cole aqui a URL do Incoming Webhook do Slack. Só precisa no serviço `beat`.
+ADVOGAI_ALERT_WEBHOOK_URL=
 ```
 
 > ⚠️ **O token da UAZAPI rotaciona** quando você mexe/reconecta a sessão da
@@ -218,6 +223,9 @@ O seed imprime também o caminho do webhook: `/webhooks/uazapi/<tenant_id>`.
   migração admin. Nunca aponte o runtime pro superusuário.
 - **Rebuild triplo:** os 3 serviços buildam a mesma imagem separadamente. É um
   pouco de desperdício de build, mas mantém tudo no painel e sem CLI.
-- **Alerta de healthcheck:** quando a instância da UAZAPI cai, hoje o
-  `healthcheck_uazapi.py` só escreve no log — ainda não há alerta ativo
-  (Slack/Sentry). Gap conhecido, não bloqueia o teste.
+- **Alerta de healthcheck:** o `beat` checa a instância a cada 5 min e dispara
+  um alerta fora-de-banda **só na transição** (caiu / reconectou), pra não
+  virar ruído. Configure `ADVOGAI_ALERT_WEBHOOK_URL` com um Incoming Webhook do
+  Slack (Slack → Apps → "Incoming Webhooks" → escolha o canal → copie a URL).
+  Sem a var, o healthcheck só loga (não quebra nada). Fora-de-banda de
+  propósito: o alerta não sai pelo WhatsApp que ele monitora (CLAUDE.md §4.7).
