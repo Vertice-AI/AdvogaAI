@@ -30,4 +30,15 @@ celery_app.conf.update(
     },
 )
 
-celery_app.autodiscover_tasks(["app.workers"])
+# Import explícito em vez de autodiscover_tasks: autodiscover procura por
+# padrão um submódulo "app/workers/tasks.py", mas cada task mora no seu
+# próprio arquivo aqui — autodiscover não achava nada e as tasks nunca
+# eram registradas no worker (ficavam "unregistered task").
+from app.workers import (  # noqa: F401
+    enviar_notificacoes,
+    healthcheck_uazapi,
+    processar_mensagem,
+    retomar_solicitacoes,
+    solicitar_aprovacoes,
+    sync_processual,
+)
