@@ -24,9 +24,19 @@ async def receber_webhook_uazapi(tenant_id: uuid.UUID, request: Request) -> Resp
     try:
         payload = json.loads(corpo)
         inbound = channel.parse_webhook(payload)
-    except ValueError:
+    except ValueError as erro:
         # eventos que não são "messages" (connection, presence, etc.) ou
         # payload mal formado — não é erro nosso, só não processamos aqui.
+        # Log só de estrutura (chaves), nunca de conteúdo — CLAUDE.md §6
+        # proíbe logar texto de relato do cliente.
+        dados = payload.get("data") if isinstance(payload, dict) else None
+        logger.warning(
+            "webhook_uazapi_nao_processado",
+            erro=str(erro),
+            evento=payload.get("event") if isinstance(payload, dict) else None,
+            chaves_payload=sorted(payload.keys()) if isinstance(payload, dict) else None,
+            chaves_data=sorted(dados.keys()) if isinstance(dados, dict) else None,
+        )
         return Response(status_code=status.HTTP_200_OK)
 
     processar_mensagem_recebida.delay(
