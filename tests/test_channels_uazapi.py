@@ -87,10 +87,12 @@ async def test_rate_limit_espaca_envios_consecutivos(monkeypatch: pytest.MonkeyP
 
 
 async def test_parse_webhook_mensagem_valida() -> None:
+    # Schema real da UAZAPI (confirmado em produção, diverge da doc oficial):
+    # evento em "EventType", corpo da mensagem em "message" — não "event"/"data".
     payload = {
-        "event": "messages",
-        "instance": "inst-123",
-        "data": {
+        "EventType": "messages",
+        "instanceName": "inst-123",
+        "message": {
             "sender": "5511999998888@s.whatsapp.net",
             "chatid": "5511999998888@s.whatsapp.net",
             "text": "Como está meu processo?",
@@ -111,9 +113,9 @@ async def test_parse_webhook_mensagem_valida() -> None:
 
 async def test_parse_webhook_mensagem_do_proprio_numero_marca_from_me() -> None:
     payload = {
-        "event": "messages",
-        "instance": "inst-123",
-        "data": {
+        "EventType": "messages",
+        "instanceName": "inst-123",
+        "message": {
             "sender": "5511999998888@s.whatsapp.net",
             "chatid": "5511999998888@s.whatsapp.net",
             "text": "/ia",
@@ -129,7 +131,11 @@ async def test_parse_webhook_mensagem_do_proprio_numero_marca_from_me() -> None:
 
 
 async def test_parse_webhook_evento_diferente_de_messages_levanta_erro() -> None:
-    payload = {"event": "connection", "instance": "inst-123", "data": {"state": "connected"}}
+    payload = {
+        "EventType": "connection",
+        "instanceName": "inst-123",
+        "message": {"state": "connected"},
+    }
 
     with pytest.raises(ValueError, match="'messages'"):
         _provider(lambda r: httpx.Response(200)).parse_webhook(payload)
@@ -137,9 +143,9 @@ async def test_parse_webhook_evento_diferente_de_messages_levanta_erro() -> None
 
 async def test_parse_webhook_sem_timestamp_levanta_erro() -> None:
     payload = {
-        "event": "messages",
-        "instance": "inst-123",
-        "data": {"sender": "5511999998888@s.whatsapp.net", "text": "oi"},
+        "EventType": "messages",
+        "instanceName": "inst-123",
+        "message": {"sender": "5511999998888@s.whatsapp.net", "text": "oi"},
     }
 
     with pytest.raises(ValueError, match="incompleto"):

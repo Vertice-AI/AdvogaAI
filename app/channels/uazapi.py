@@ -51,16 +51,20 @@ class UazapiProvider:
         return await self.send_text(to, texto_renderizado)
 
     def parse_webhook(self, payload: dict[str, Any]) -> InboundMessage:
-        evento = payload.get("event")
+        # Schema real da instância (confirmado em produção, diverge da doc
+        # oficial): o evento vem em "EventType", não "event", e o corpo da
+        # mensagem em "message", não "data". Os campos internos (sender,
+        # chatid, text, messageid, messageTimestamp, fromMe) são os mesmos.
+        evento = payload.get("EventType")
         if evento != "messages":
             raise ValueError(f"parse_webhook só entende o evento 'messages', recebeu {evento!r}")
 
-        dados = payload.get("data")
+        dados = payload.get("message")
         if not isinstance(dados, dict):
             # ValueError (não TypeError) de propósito: é o mesmo tipo de erro
             # das outras validações desta função, e quem chama (app/api/webhooks.py)
             # trata tudo como payload malformado/inesperado com um único except ValueError.
-            raise ValueError("payload de webhook sem campo 'data'")  # noqa: TRY004
+            raise ValueError("payload de webhook sem campo 'message'")  # noqa: TRY004
 
         numero = _extrair_numero(str(dados.get("sender") or dados.get("chatid") or ""))
         timestamp_ms = dados.get("messageTimestamp")

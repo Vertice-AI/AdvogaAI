@@ -15,10 +15,12 @@ def _segredo_webhook(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _payload_mensagem() -> dict[str, Any]:
+    # Schema real da UAZAPI (confirmado em produção, diverge da doc oficial):
+    # evento em "EventType", corpo da mensagem em "message" — não "event"/"data".
     return {
-        "event": "messages",
-        "instance": "inst-1",
-        "data": {
+        "EventType": "messages",
+        "instanceName": "inst-1",
+        "message": {
             "sender": "5511999998888@s.whatsapp.net",
             "chatid": "5511999998888@s.whatsapp.net",
             "text": "oi",
@@ -69,7 +71,11 @@ def test_webhook_evento_diferente_de_messages_retorna_200_sem_enfileirar(
 ) -> None:
     chamadas: list[dict[str, Any]] = []
     monkeypatch.setattr(processar_mensagem_recebida, "delay", lambda **kw: chamadas.append(kw))
-    payload = {"event": "connection", "instance": "inst-1", "data": {"state": "connected"}}
+    payload = {
+        "EventType": "connection",
+        "instanceName": "inst-1",
+        "message": {"state": "connected"},
+    }
 
     with TestClient(app) as client:
         resposta = client.post(
