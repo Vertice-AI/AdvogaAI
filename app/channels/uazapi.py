@@ -90,8 +90,17 @@ class UazapiProvider:
         return hmac.compare_digest(recebido, self._webhook_secret)
 
     async def verificar_status(self) -> str:
+        # A resposta tem dois campos "status" em níveis diferentes: o de
+        # nível raiz é um OBJETO ({"connected": bool, "loggedIn": bool, ...}),
+        # não o estado que queremos. O enum de estado (connected/connecting/
+        # disconnected/hibernated) mora em resposta["instance"]["status"] —
+        # confirmado na doc oficial (docs.uazapi.com, schema de resposta do
+        # GET /instance/status). Pegar o campo errado faz o healthcheck achar
+        # a instância sempre "desconhecida"/não saudável mesmo conectada.
         resposta = await self._chamar_com_retry("GET", "/instance/status", None)
-        return str(resposta.get("status") or resposta.get("state") or "desconhecido")
+        instancia = resposta.get("instance")
+        estado = instancia.get("status") if isinstance(instancia, dict) else None
+        return str(estado or "desconhecido")
 
     async def _respeitar_rate_limit(self) -> None:
         async with self._envio_lock:

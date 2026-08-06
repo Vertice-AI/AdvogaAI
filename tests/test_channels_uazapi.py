@@ -155,10 +155,24 @@ async def test_verify_signature_aceita_segredo_correto_e_rejeita_incorreto() -> 
 
 
 async def test_verificar_status_retorna_estado() -> None:
+    # Schema real da UAZAPI (confirmado na doc oficial): o estado que
+    # queremos mora em instance.status. O campo "status" de nível raiz é
+    # um OBJETO diferente ({"connected": bool, "loggedIn": bool, "jid": ...})
+    # — não confundir os dois.
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url == "https://vrtice.uazapi.com/instance/status"
         assert request.method == "GET"
-        return httpx.Response(200, json={"status": "connected"})
+        return httpx.Response(
+            200,
+            json={
+                "instance": {"status": "connected"},
+                "status": {
+                    "connected": True,
+                    "loggedIn": True,
+                    "jid": "558100000000@s.whatsapp.net",
+                },
+            },
+        )
 
     estado = await _provider(handler).verificar_status()
 
@@ -172,7 +186,13 @@ async def test_verificar_status_retry_em_erro_5xx_ate_ter_sucesso() -> None:
         chamadas["n"] += 1
         if chamadas["n"] < 3:
             return httpx.Response(503)
-        return httpx.Response(200, json={"status": "connecting"})
+        return httpx.Response(
+            200,
+            json={
+                "instance": {"status": "connecting"},
+                "status": {"connected": False, "loggedIn": False, "jid": None},
+            },
+        )
 
     estado = await _provider(handler).verificar_status()
 

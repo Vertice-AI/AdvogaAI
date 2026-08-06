@@ -6,8 +6,11 @@ from app.workers.healthcheck_uazapi import verificar_saude
 
 
 def _provider(estado: str) -> UazapiProvider:
+    # Schema real da UAZAPI: o estado (connected/disconnected/...) mora em
+    # instance.status, não no "status" de nível raiz (esse é um objeto
+    # diferente) — ver app/channels/uazapi.py:verificar_status.
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"status": estado})
+        return httpx.Response(200, json={"instance": {"status": estado}})
 
     return UazapiProvider(
         base_url="https://vrtice.uazapi.com",
