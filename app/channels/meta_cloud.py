@@ -21,3 +21,7 @@ class MetaCloudProvider:
 
     def verify_signature(self, payload: bytes, headers: dict[str, str]) -> bool:
         raise NotImplementedError(_NAO_IMPLEMENTADO)
+
+    async def aclose(self) -> None:
+        # Stub sem cliente HTTP próprio — nada pra liberar ainda.
+        pass

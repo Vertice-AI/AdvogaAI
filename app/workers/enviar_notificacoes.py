@@ -32,6 +32,7 @@ async def enviar_notificacoes_de_todos_os_tenants() -> None:
             await enviar_notificacoes_do_tenant(session, channel, tenant.id)
     finally:
         session.close()
+        await channel.aclose()
 
 
 async def enviar_notificacoes_do_tenant(

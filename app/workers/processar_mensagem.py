@@ -86,3 +86,4 @@ async def _processar_mensagem_recebida_async(
         raise
     finally:
         session.close()
+        await channel.aclose()

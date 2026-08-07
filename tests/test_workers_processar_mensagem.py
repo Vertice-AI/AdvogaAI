@@ -2,8 +2,12 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from app.channels.base import InboundMessage, MessageId
 from app.workers.celery_app import celery_app
-from app.workers.processar_mensagem import processar_mensagem_recebida
+from app.workers.processar_mensagem import (
+    _processar_mensagem_recebida_async,
+    processar_mensagem_recebida,
+)
 
 _ARGS = (
     "11111111-1111-1111-1111-111111111111",
@@ -13,6 +17,30 @@ _ARGS = (
     "2026-07-25T10:00:00+00:00",
     False,
 )
+
+
+class _ChannelFake:
+    """Só rastreia se aclose() foi chamado — os demais métodos não são
+    exercitados porque processar_mensagem (o service) é mockado nos testes
+    que usam este fake."""
+
+    def __init__(self) -> None:
+        self.fechado = False
+
+    async def send_text(self, to: str, text: str) -> MessageId:
+        raise NotImplementedError
+
+    async def send_template(self, to: str, template: str, params: dict[str, str]) -> MessageId:
+        raise NotImplementedError
+
+    def parse_webhook(self, payload: dict[str, object]) -> InboundMessage:
+        raise NotImplementedError
+
+    def verify_signature(self, payload: bytes, headers: dict[str, str]) -> bool:
+        raise NotImplementedError
+
+    async def aclose(self) -> None:
+        self.fechado = True
 
 
 @pytest.fixture(autouse=True)
@@ -48,3 +76,27 @@ def test_desiste_apos_esgotar_tentativas() -> None:
         processar_mensagem_recebida.apply(args=_ARGS).get()
 
     assert execucao.await_count == 3
+
+
+async def test_fecha_o_canal_mesmo_quando_processamento_falha() -> None:
+    # Regressão: UazapiProvider mantém um httpx.AsyncClient interno; sem
+    # aclose() no finally, cada task vaza uma conexão — inofensivo num
+    # processo curto, mas um worker de vida longa acumula até travar novas
+    # chamadas (foi exatamente o bug do ReadTimeout intermitente em produção,
+    # 2026-08-06). O teste cobre o caminho de falha porque é o mais fácil de
+    # esquecer o `finally`.
+    channel_fake = _ChannelFake()
+    with (
+        patch(
+            "app.workers.processar_mensagem.get_channel_provider",
+            return_value=channel_fake,
+        ),
+        patch(
+            "app.workers.processar_mensagem.processar_mensagem",
+            AsyncMock(side_effect=RuntimeError("falhou")),
+        ),
+        pytest.raises(RuntimeError, match="falhou"),
+    ):
+        await _processar_mensagem_recebida_async(*_ARGS)
+
+    assert channel_fake.fechado is True

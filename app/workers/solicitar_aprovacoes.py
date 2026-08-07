@@ -32,6 +32,7 @@ async def solicitar_aprovacoes_de_todos_os_tenants() -> None:
             await solicitar_aprovacoes_do_tenant(session, channel, tenant.id)
     finally:
         session.close()
+        await channel.aclose()
 
 
 async def solicitar_aprovacoes_do_tenant(

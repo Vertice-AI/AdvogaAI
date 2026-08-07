@@ -30,6 +30,7 @@ async def retomar_solicitacoes_de_todos_os_tenants() -> None:
             await retomar_solicitacoes_do_tenant(session, channel, tenant.id)
     finally:
         session.close()
+        await channel.aclose()
 
 
 async def retomar_solicitacoes_do_tenant(

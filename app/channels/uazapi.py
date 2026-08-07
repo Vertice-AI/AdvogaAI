@@ -93,6 +93,9 @@ class UazapiProvider:
         recebido = headers.get(_WEBHOOK_SECRET_KEY, "")
         return hmac.compare_digest(recebido, self._webhook_secret)
 
+    async def aclose(self) -> None:
+        await self._client.aclose()
+
     async def verificar_status(self) -> str:
         # A resposta tem dois campos "status" em níveis diferentes: o de
         # nível raiz é um OBJETO ({"connected": bool, "loggedIn": bool, ...}),

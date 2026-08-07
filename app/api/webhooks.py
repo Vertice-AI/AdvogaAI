@@ -18,43 +18,48 @@ async def receber_webhook_uazapi(tenant_id: uuid.UUID, request: Request) -> Resp
     segredo = request.query_params.get("secret", "")
 
     channel = get_channel_provider()
-    if not channel.verify_signature(corpo, {"webhook_secret": segredo}):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="assinatura inválida")
-
     try:
-        payload = json.loads(corpo)
-        inbound = channel.parse_webhook(payload)
-    except ValueError as erro:
-        # eventos que não são "messages" (connection, presence, etc.) ou
-        # payload mal formado — não é erro nosso, só não processamos aqui.
-        # Log só de estrutura (chaves e valores curtos não-sensíveis, tipo
-        # nome de evento), nunca de conteúdo — CLAUDE.md §6 proíbe logar
-        # texto de relato do cliente. O payload real da UAZAPI nesta
-        # instância não bate com a doc oficial nem com o schema que
-        # parse_webhook espera (visto em produção: sem "event"/"data", com
-        # "EventType"/"message" em vez disso) — por isso capturamos também
-        # esses campos alternativos pra próxima rodada de diagnóstico.
-        dados = payload.get("data") if isinstance(payload, dict) else None
-        mensagem = payload.get("message") if isinstance(payload, dict) else None
-        chat = payload.get("chat") if isinstance(payload, dict) else None
-        logger.warning(
-            "webhook_uazapi_nao_processado",
-            erro=str(erro),
-            evento=payload.get("event") if isinstance(payload, dict) else None,
-            event_type=payload.get("EventType") if isinstance(payload, dict) else None,
-            chaves_payload=sorted(payload.keys()) if isinstance(payload, dict) else None,
-            chaves_data=sorted(dados.keys()) if isinstance(dados, dict) else None,
-            chaves_message=sorted(mensagem.keys()) if isinstance(mensagem, dict) else None,
-            chaves_chat=sorted(chat.keys()) if isinstance(chat, dict) else None,
+        if not channel.verify_signature(corpo, {"webhook_secret": segredo}):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="assinatura inválida"
+            )
+
+        try:
+            payload = json.loads(corpo)
+            inbound = channel.parse_webhook(payload)
+        except ValueError as erro:
+            # eventos que não são "messages" (connection, presence, etc.) ou
+            # payload mal formado — não é erro nosso, só não processamos aqui.
+            # Log só de estrutura (chaves e valores curtos não-sensíveis, tipo
+            # nome de evento), nunca de conteúdo — CLAUDE.md §6 proíbe logar
+            # texto de relato do cliente. O payload real da UAZAPI nesta
+            # instância não bate com a doc oficial nem com o schema que
+            # parse_webhook espera (visto em produção: sem "event"/"data", com
+            # "EventType"/"message" em vez disso) — por isso capturamos também
+            # esses campos alternativos pra próxima rodada de diagnóstico.
+            dados = payload.get("data") if isinstance(payload, dict) else None
+            mensagem = payload.get("message") if isinstance(payload, dict) else None
+            chat = payload.get("chat") if isinstance(payload, dict) else None
+            logger.warning(
+                "webhook_uazapi_nao_processado",
+                erro=str(erro),
+                evento=payload.get("event") if isinstance(payload, dict) else None,
+                event_type=payload.get("EventType") if isinstance(payload, dict) else None,
+                chaves_payload=sorted(payload.keys()) if isinstance(payload, dict) else None,
+                chaves_data=sorted(dados.keys()) if isinstance(dados, dict) else None,
+                chaves_message=sorted(mensagem.keys()) if isinstance(mensagem, dict) else None,
+                chaves_chat=sorted(chat.keys()) if isinstance(chat, dict) else None,
+            )
+            return Response(status_code=status.HTTP_200_OK)
+
+        processar_mensagem_recebida.delay(
+            tenant_id=str(tenant_id),
+            from_number=inbound.from_number,
+            text=inbound.text,
+            message_id=inbound.message_id,
+            timestamp_iso=inbound.timestamp.isoformat(),
+            from_me=inbound.from_me,
         )
         return Response(status_code=status.HTTP_200_OK)
-
-    processar_mensagem_recebida.delay(
-        tenant_id=str(tenant_id),
-        from_number=inbound.from_number,
-        text=inbound.text,
-        message_id=inbound.message_id,
-        timestamp_iso=inbound.timestamp.isoformat(),
-        from_me=inbound.from_me,
-    )
-    return Response(status_code=status.HTTP_200_OK)
+    finally:
+        await channel.aclose()

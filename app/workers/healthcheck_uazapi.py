@@ -55,7 +55,10 @@ async def _verificar_saude_uazapi_async() -> None:
     async def _alertar(texto: str) -> None:
         await enviar_alerta(texto, settings.alert_webhook_url)
 
-    await verificar_saude(provider, store=store, alertar=_alertar)
+    try:
+        await verificar_saude(provider, store=store, alertar=_alertar)
+    finally:
+        await provider.aclose()
 
 
 async def verificar_saude(
