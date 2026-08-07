@@ -2,6 +2,7 @@ import asyncio
 import json
 from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Self
 
 import httpx
 import pytest
@@ -21,6 +22,32 @@ def _provider(handler: Callable[[httpx.Request], httpx.Response]) -> UazapiProvi
         webhook_secret="SEGREDO_TESTE",
         client=_client_com_handler(handler),
     )
+
+
+class _FakeRedisLock:
+    def __init__(self) -> None:
+        self.entrou = False
+        self.saiu = False
+
+    async def __aenter__(self) -> Self:
+        self.entrou = True
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        self.saiu = True
+
+
+class _FakeRedis:
+    def __init__(self) -> None:
+        self.lock_chamado_com: tuple[str, int, float] | None = None
+        self.lock_obj = _FakeRedisLock()
+
+    def lock(self, name: str, timeout: int, blocking_timeout: float) -> _FakeRedisLock:
+        self.lock_chamado_com = (name, timeout, blocking_timeout)
+        return self.lock_obj
+
+    async def aclose(self) -> None:
+        pass
 
 
 async def test_send_text_envia_corpo_e_headers_corretos() -> None:
@@ -84,6 +111,36 @@ async def test_rate_limit_espaca_envios_consecutivos(monkeypatch: pytest.MonkeyP
     duracao = loop.time() - inicio
 
     assert duracao >= 0.1
+
+
+async def test_send_text_usa_lock_distribuido_quando_redis_configurado(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Regressão: sem lock distribuído, duas tasks concorrentes (worker com
+    # concurrency>1) enviam ao mesmo tempo sem espaçamento nenhum — foi a
+    # causa raiz do ReadTimeout intermitente em produção (2026-08-07). Cada
+    # UazapiProvider é uma instância nova por task, então o lock precisa vir
+    # de um recurso compartilhado (Redis), não de um asyncio.Lock local.
+    fake_redis = _FakeRedis()
+    monkeypatch.setattr(uazapi_module.aioredis, "from_url", lambda *a, **kw: fake_redis)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"id": "MSG123"})
+
+    provider = UazapiProvider(
+        base_url="https://vrtice.uazapi.com",
+        token="TOKEN_TESTE",
+        webhook_secret="SEGREDO_TESTE",
+        client=_client_com_handler(handler),
+        redis_url="redis://fake:6379",
+    )
+
+    await provider.send_text("5511999998888", "oi")
+
+    assert fake_redis.lock_chamado_com is not None
+    assert fake_redis.lock_chamado_com[0] == "advogai:uazapi:envio_lock"
+    assert fake_redis.lock_obj.entrou is True
+    assert fake_redis.lock_obj.saiu is True
 
 
 async def test_parse_webhook_mensagem_valida() -> None:

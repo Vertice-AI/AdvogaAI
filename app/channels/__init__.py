@@ -12,6 +12,7 @@ def get_channel_provider() -> ChannelProvider:
             base_url=settings.uazapi_base_url,
             token=settings.uazapi_token,
             webhook_secret=settings.uazapi_webhook_secret,
+            redis_url=settings.redis_url,
         )
     if settings.channel_provider == "meta_cloud":
         return MetaCloudProvider()

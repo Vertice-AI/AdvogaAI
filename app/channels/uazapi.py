@@ -2,10 +2,13 @@ import asyncio
 import hmac
 import random
 import re
+from collections.abc import AsyncIterator
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any, cast
 
 import httpx
+import redis.asyncio as aioredis
 
 from app.channels.base import InboundMessage, MessageId
 
@@ -20,6 +23,17 @@ _JITTER_MAXIMO_SEGUNDOS = 2.0
 # webhook). Quem registra o webhook embute esse valor antes de chamar
 # verify_signature; ver docstring do método.
 _WEBHOOK_SECRET_KEY = "webhook_secret"
+# Lock distribuído (Redis) pra serializar envios entre processos diferentes
+# do worker. Achado em produção (2026-08-06/07): cada task cria uma
+# UazapiProvider nova, então um asyncio.Lock por instância não protege nada
+# entre tasks concorrentes (worker roda com concurrency>1, processos
+# separados). Duas mensagens processadas ao mesmo tempo batem na UAZAPI sem
+# nenhum espaçamento — o backend dela trava numa das duas, e o timeout de
+# 10s do nosso lado estoura (ReadTimeout). TTL do lock maior que o timeout
+# HTTP, pra não travar pra sempre se o processo cair no meio do envio.
+_CHAVE_LOCK_ENVIO = "advogai:uazapi:envio_lock"
+_LOCK_TTL_SEGUNDOS = 20
+_LOCK_ESPERA_MAXIMA_SEGUNDOS = 30.0
 
 
 class UazapiProvider:
@@ -29,17 +43,24 @@ class UazapiProvider:
         token: str,
         webhook_secret: str,
         client: httpx.AsyncClient | None = None,
+        redis_url: str | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._token = token
         self._webhook_secret = webhook_secret
         self._client = client or httpx.AsyncClient(timeout=_TIMEOUT_SEGUNDOS)
+        self._redis = aioredis.from_url(redis_url, decode_responses=True) if redis_url else None
+        # Fallback local (sem Redis, ex.: testes unitários) — só protege
+        # dentro do mesmo processo, mas mantém o comportamento anterior.
         self._envio_lock = asyncio.Lock()
         self._ultimo_envio: float | None = None
 
     async def send_text(self, to: str, text: str) -> MessageId:
-        await self._respeitar_rate_limit()
-        resposta = await self._chamar_com_retry("POST", "/send/text", {"number": to, "text": text})
+        async with self._lock_de_envio():
+            await self._respeitar_rate_limit()
+            resposta = await self._chamar_com_retry(
+                "POST", "/send/text", {"number": to, "text": text}
+            )
         return _extrair_message_id(resposta)
 
     async def send_template(self, to: str, template: str, params: dict[str, str]) -> MessageId:
@@ -95,6 +116,17 @@ class UazapiProvider:
 
     async def aclose(self) -> None:
         await self._client.aclose()
+        if self._redis is not None:
+            await self._redis.aclose()
+
+    def _lock_de_envio(self) -> AbstractAsyncContextManager[Any]:
+        if self._redis is not None:
+            return self._redis.lock(
+                _CHAVE_LOCK_ENVIO,
+                timeout=_LOCK_TTL_SEGUNDOS,
+                blocking_timeout=_LOCK_ESPERA_MAXIMA_SEGUNDOS,
+            )
+        return _sem_lock()
 
     async def verificar_status(self) -> str:
         # A resposta tem dois campos "status" em níveis diferentes: o de
@@ -158,3 +190,10 @@ def _extrair_message_id(resposta: dict[str, Any]) -> MessageId:
 
 def _extrair_numero(jid: str) -> str:
     return re.sub(r"@.*$", "", jid)
+
+
+@asynccontextmanager
+async def _sem_lock() -> AsyncIterator[None]:
+    """Fallback quando não há Redis configurado (ex.: testes unitários) — só
+    mantém a interface de context manager, sem exclusão entre processos."""
+    yield

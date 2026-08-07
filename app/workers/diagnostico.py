@@ -29,6 +29,7 @@ async def _diagnosticar_envio_async(numero: str) -> None:
         base_url=settings.uazapi_base_url,
         token=settings.uazapi_token,
         webhook_secret=settings.uazapi_webhook_secret,
+        redis_url=settings.redis_url,
     )
     inicio = time.monotonic()
     try:
