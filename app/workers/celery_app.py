@@ -35,6 +35,7 @@ celery_app.conf.update(
 # próprio arquivo aqui — autodiscover não achava nada e as tasks nunca
 # eram registradas no worker (ficavam "unregistered task").
 from app.workers import (  # noqa: F401
+    diagnostico,
     enviar_notificacoes,
     healthcheck_uazapi,
     processar_mensagem,
