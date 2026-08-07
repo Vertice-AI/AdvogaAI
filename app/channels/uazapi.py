@@ -55,7 +55,19 @@ class UazapiProvider:
         self._base_url = base_url.rstrip("/")
         self._token = token
         self._webhook_secret = webhook_secret
-        self._client = client or httpx.AsyncClient(timeout=_TIMEOUT_SEGUNDOS)
+        # max_keepalive_connections=0: nunca reaproveita conexão HTTP entre
+        # requisições — cada tentativa de _chamar_com_retry abre conexão nova.
+        # Achado em produção (2026-08-07): um worker de vida longa (10h+ no
+        # ar) acumulou um ReadTimeout que se repetia nas 3 tentativas de uma
+        # mesma task, sempre a mesma mensagem — consistente com reaproveitar
+        # uma conexão persistente que ficou "meio-quebrada". Testes isolados
+        # feitos logo após um redeploy (conexão sempre nova) nunca reproduziram
+        # isso. Custa uma conexão TCP/TLS a mais por tentativa, aceitável pro
+        # volume de mensagens do Solo.
+        self._client = client or httpx.AsyncClient(
+            timeout=_TIMEOUT_SEGUNDOS,
+            limits=httpx.Limits(max_keepalive_connections=0),
+        )
         self._redis = aioredis.from_url(redis_url, decode_responses=True) if redis_url else None
         # Fallback local (sem Redis, ex.: testes unitários) — só protege
         # dentro do mesmo processo, mas mantém o comportamento anterior.
