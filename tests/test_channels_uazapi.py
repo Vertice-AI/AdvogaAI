@@ -143,6 +143,18 @@ async def test_send_text_usa_lock_distribuido_quando_redis_configurado(
     assert fake_redis.lock_obj.saiu is True
 
 
+def test_lock_ttl_maior_que_pior_caso_do_envio() -> None:
+    # Regressão: TTL de 20s (primeira versão do lock) era menor que o pior
+    # caso de _chamar_com_retry (3 tentativas x 10s de timeout + ~1.5s de
+    # backoff entre elas ≈ 31.5s, mais até 5s de espera do rate limit ≈
+    # 36.5s) — o lock expirava sozinho com o envio ainda em andamento,
+    # causando LockNotOwnedError na hora de liberar (bug real em produção,
+    # 2026-08-07). Se alguém mexer nesses números de novo sem ajustar o TTL
+    # junto, este teste quebra antes de virar bug em produção.
+    pior_caso_estimado_segundos = 37.0
+    assert uazapi_module._LOCK_TTL_SEGUNDOS > pior_caso_estimado_segundos
+
+
 async def test_parse_webhook_mensagem_valida() -> None:
     # Schema real da UAZAPI (confirmado em produção, diverge da doc oficial):
     # evento em "EventType", corpo da mensagem em "message" — não "event"/"data".

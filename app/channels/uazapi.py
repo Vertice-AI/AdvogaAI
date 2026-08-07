@@ -29,11 +29,18 @@ _WEBHOOK_SECRET_KEY = "webhook_secret"
 # entre tasks concorrentes (worker roda com concurrency>1, processos
 # separados). Duas mensagens processadas ao mesmo tempo batem na UAZAPI sem
 # nenhum espaçamento — o backend dela trava numa das duas, e o timeout de
-# 10s do nosso lado estoura (ReadTimeout). TTL do lock maior que o timeout
-# HTTP, pra não travar pra sempre se o processo cair no meio do envio.
+# 10s do nosso lado estoura (ReadTimeout).
+#
+# TTL do lock precisa cobrir o PIOR CASO do que roda dentro dele (rate limit
+# + _chamar_com_retry), não só o timeout de uma tentativa — 20s (fixado na
+# primeira versão) era curto demais e expirava com a operação ainda em
+# andamento, causando LockNotOwnedError na hora de liberar (achado em
+# produção logo depois do primeiro deploy desse fix, 2026-08-07). Pior caso:
+# espera de rate limit (até 5s) + 3 tentativas de _TIMEOUT_SEGUNDOS (10s)
+# cada + backoff entre elas (~1.5s) ≈ 36.5s — 60s dá margem confortável.
 _CHAVE_LOCK_ENVIO = "advogai:uazapi:envio_lock"
-_LOCK_TTL_SEGUNDOS = 20
-_LOCK_ESPERA_MAXIMA_SEGUNDOS = 30.0
+_LOCK_TTL_SEGUNDOS = 60
+_LOCK_ESPERA_MAXIMA_SEGUNDOS = 60.0
 
 
 class UazapiProvider:
