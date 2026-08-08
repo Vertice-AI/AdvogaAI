@@ -12,6 +12,8 @@ import time
 
 import structlog
 
+from app.agents.atendimento import AtendimentoAgent
+from app.agents.processual import AnthropicMessagesClient
 from app.channels.uazapi import UazapiProvider
 from app.core.config import settings
 from app.workers.celery_app import celery_app
@@ -42,6 +44,47 @@ async def _diagnosticar_envio_async(numero: str) -> None:
         duracao = time.monotonic() - inicio
         logger.warning(
             "diagnostico_envio_falhou",
+            tipo=type(erro).__name__,
+            erro=str(erro),
+            duracao=f"{duracao:.2f}s",
+        )
+    finally:
+        await provider.aclose()
+
+
+@celery_app.task(name="workers.diagnosticar_envio_com_agent")
+def diagnosticar_envio_com_agent(numero: str) -> None:
+    asyncio.run(_diagnosticar_envio_com_agent_async(numero))
+
+
+async def _diagnosticar_envio_com_agent_async(numero: str) -> None:
+    # Isola a única diferença de código entre este diagnóstico e o de cima:
+    # construir (sem usar) o AtendimentoAgent/AnthropicMessagesClient antes
+    # do send_text — é o que o fluxo real (_processar_mensagem_recebida_async)
+    # faz e a task diagnosticar_envio não faz. Se isso sozinho reproduzir o
+    # ReadTimeout, achamos a causa; se não, o problema está em outro lugar
+    # do fluxo real (DB/RLS).
+    provider = UazapiProvider(
+        base_url=settings.uazapi_base_url,
+        token=settings.uazapi_token,
+        webhook_secret=settings.uazapi_webhook_secret,
+        redis_url=settings.redis_url,
+    )
+    _agent = AtendimentoAgent(
+        client=AnthropicMessagesClient(settings.anthropic_api_key),
+        haiku_model=settings.haiku_model,
+    )
+    inicio = time.monotonic()
+    try:
+        message_id = await provider.send_text(numero, "diagnóstico com agent construído antes")
+        duracao = time.monotonic() - inicio
+        logger.warning(
+            "diagnostico_envio_com_agent_sucesso", message_id=message_id, duracao=f"{duracao:.2f}s"
+        )
+    except Exception as erro:  # noqa: BLE001 — task de diagnóstico, quer ver qualquer falha
+        duracao = time.monotonic() - inicio
+        logger.warning(
+            "diagnostico_envio_com_agent_falhou",
             tipo=type(erro).__name__,
             erro=str(erro),
             duracao=f"{duracao:.2f}s",
