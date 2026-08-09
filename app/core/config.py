@@ -27,5 +27,13 @@ class Settings(BaseSettings):
     # alerta não pode depender do WhatsApp que ele está monitorando.
     alert_webhook_url: str = ""
 
+    # Número pessoal (não o da instância) que recebe o alerta de "mensagem de
+    # cliente sem resposta" (app/workers/processar_mensagem.py). Decisão
+    # consciente de 2026-08-09: manda pelo próprio WhatsApp em vez de
+    # fora-de-banda — aceita o risco de não chegar se a instância cair de
+    # vez (esse caso continua coberto por alert_webhook_url, se configurado).
+    # Vazio = no-op.
+    alert_whatsapp_numero: str = ""
+
 
 settings = Settings()

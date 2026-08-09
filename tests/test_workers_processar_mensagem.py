@@ -20,15 +20,17 @@ _ARGS = (
 
 
 class _ChannelFake:
-    """Só rastreia se aclose() foi chamado — os demais métodos não são
-    exercitados porque processar_mensagem (o service) é mockado nos testes
-    que usam este fake."""
+    """Rastreia aclose() e as chamadas de send_text (usado pelo teste do
+    alerta) — os demais métodos não são exercitados porque processar_mensagem
+    (o service) é mockado nos testes que usam este fake."""
 
     def __init__(self) -> None:
         self.fechado = False
+        self.enviados: list[tuple[str, str]] = []
 
     async def send_text(self, to: str, text: str) -> MessageId:
-        raise NotImplementedError
+        self.enviados.append((to, text))
+        return "MSG-ALERTA"
 
     async def send_template(self, to: str, template: str, params: dict[str, str]) -> MessageId:
         raise NotImplementedError
@@ -82,23 +84,52 @@ def test_alerta_advogado_quando_desiste_de_vez() -> None:
     # Sem isso, uma mensagem de cliente que esgota as tentativas fica sem
     # resposta e ninguém no escritório fica sabendo (só existia log) — achado
     # em produção em 2026-08-08/09, ReadTimeout persistente vindo da UAZAPI.
+    # Manda pelo próprio WhatsApp (settings.alert_whatsapp_numero), decisão de
+    # 2026-08-09 — ver app/workers/processar_mensagem.py.
     texto_do_cliente = "relato-confidencial-do-cliente"
     args = (*_ARGS[:2], texto_do_cliente, *_ARGS[3:])
     execucao = AsyncMock(side_effect=RuntimeError("uazapi indisponível"))
-    alerta = AsyncMock()
+    channel_fake = _ChannelFake()
     with (
         patch("app.workers.processar_mensagem._processar_mensagem_recebida_async", execucao),
         patch.object(processar_mensagem_recebida, "max_retries", 0),
         patch("app.workers.processar_mensagem._BACKOFF_BASE_SEGUNDOS", 0),
-        patch("app.workers.processar_mensagem.enviar_alerta", alerta),
+        patch("app.workers.processar_mensagem.settings.alert_whatsapp_numero", "5581994065983"),
+        patch(
+            "app.workers.processar_mensagem.get_channel_provider",
+            return_value=channel_fake,
+        ),
         pytest.raises(RuntimeError, match="uazapi indisponível"),
     ):
         processar_mensagem_recebida.apply(args=args).get()
 
-    assert alerta.await_count == 1
-    texto, _webhook_url = alerta.await_args.args
-    assert "5511999997777" in texto
-    assert texto_do_cliente not in texto
+    texto_esperado = (
+        "🔴 AdvogAI: não conseguimos responder automaticamente ao WhatsApp "
+        "5511999997777 (tenant 11111111-1111-1111-1111-111111111111) "
+        "depois de 5 tentativas. Confira e responda manualmente."
+    )
+    assert channel_fake.enviados == [("5581994065983", texto_esperado)]
+    assert texto_do_cliente not in channel_fake.enviados[0][1]
+    assert channel_fake.fechado is True
+
+
+def test_nao_alerta_sem_numero_configurado() -> None:
+    execucao = AsyncMock(side_effect=RuntimeError("uazapi indisponível"))
+    channel_fake = _ChannelFake()
+    with (
+        patch("app.workers.processar_mensagem._processar_mensagem_recebida_async", execucao),
+        patch.object(processar_mensagem_recebida, "max_retries", 0),
+        patch("app.workers.processar_mensagem._BACKOFF_BASE_SEGUNDOS", 0),
+        patch("app.workers.processar_mensagem.settings.alert_whatsapp_numero", ""),
+        patch(
+            "app.workers.processar_mensagem.get_channel_provider",
+            return_value=channel_fake,
+        ),
+        pytest.raises(RuntimeError, match="uazapi indisponível"),
+    ):
+        processar_mensagem_recebida.apply(args=_ARGS).get()
+
+    assert channel_fake.enviados == []
 
 
 async def test_fecha_o_canal_mesmo_quando_processamento_falha() -> None:

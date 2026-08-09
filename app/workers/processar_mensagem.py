@@ -14,7 +14,6 @@ from app.channels import get_channel_provider
 from app.channels.base import InboundMessage
 from app.core.config import settings
 from app.db.base import SessionLocal
-from app.services.alertas import enviar_alerta
 from app.services.atendimento import processar_mensagem
 from app.workers.celery_app import celery_app
 
@@ -62,22 +61,36 @@ def processar_mensagem_recebida(
 
 def _alertar_falha_definitiva(tenant_id: str, from_number: str) -> None:
     # Depois de esgotar as tentativas, o cliente fica sem resposta automática
-    # — sem isso, ninguém no escritório fica sabendo (só existia log). Canal
-    # fora-de-banda (app/services/alertas.py), não pelo próprio WhatsApp: se
-    # o motivo da falha for a instância UAZAPI, o alerta não pode depender
-    # dela. Não inclui o texto da mensagem do cliente (CLAUDE.md §6) — só o
-    # número, pra quem for atender manualmente encontrar a conversa.
+    # — sem isso, ninguém no escritório fica sabendo (só existia log). Decisão
+    # consciente de 2026-08-09: manda pelo próprio WhatsApp (settings.
+    # alert_whatsapp_numero) em vez do webhook fora-de-banda de
+    # app/services/alertas.py — o bug de hoje (ReadTimeout ao responder logo
+    # após receber) não é queda de instância, então o WhatsApp costuma
+    # continuar disponível pra esse alerta específico. Aceita o risco de não
+    # chegar se a instância cair de vez; esse caso continua coberto pelo
+    # alerta fora-de-banda do healthcheck (app/workers/healthcheck_uazapi.py).
+    # Não inclui o texto da mensagem do cliente (CLAUDE.md §6) — só o número,
+    # pra quem for atender manualmente encontrar a conversa.
+    if not settings.alert_whatsapp_numero:
+        logger.info("alerta_sem_numero_configurado", tenant_id=tenant_id)
+        return
     try:
-        asyncio.run(
-            enviar_alerta(
-                f"🔴 AdvogAI: não conseguimos responder automaticamente ao "
-                f"WhatsApp {from_number} (tenant {tenant_id}) depois de "
-                f"{_MAX_TENTATIVAS} tentativas. Confira e responda manualmente.",
-                settings.alert_webhook_url,
-            )
-        )
+        asyncio.run(_enviar_alerta_whatsapp_async(tenant_id, from_number))
     except Exception as erro:  # noqa: BLE001 — alerta é best-effort (mesmo padrão de app/workers/healthcheck_uazapi.py)
         logger.error("falha_ao_enviar_alerta_processamento", erro=str(erro))
+
+
+async def _enviar_alerta_whatsapp_async(tenant_id: str, from_number: str) -> None:
+    channel = get_channel_provider()
+    try:
+        await channel.send_text(
+            settings.alert_whatsapp_numero,
+            f"🔴 AdvogAI: não conseguimos responder automaticamente ao "
+            f"WhatsApp {from_number} (tenant {tenant_id}) depois de "
+            f"{_MAX_TENTATIVAS} tentativas. Confira e responda manualmente.",
+        )
+    finally:
+        await channel.aclose()
 
 
 async def _processar_mensagem_recebida_async(
