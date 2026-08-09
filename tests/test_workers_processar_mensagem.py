@@ -78,6 +78,29 @@ def test_desiste_apos_esgotar_tentativas() -> None:
     assert execucao.await_count == 3
 
 
+def test_alerta_advogado_quando_desiste_de_vez() -> None:
+    # Sem isso, uma mensagem de cliente que esgota as tentativas fica sem
+    # resposta e ninguém no escritório fica sabendo (só existia log) — achado
+    # em produção em 2026-08-08/09, ReadTimeout persistente vindo da UAZAPI.
+    texto_do_cliente = "relato-confidencial-do-cliente"
+    args = (*_ARGS[:2], texto_do_cliente, *_ARGS[3:])
+    execucao = AsyncMock(side_effect=RuntimeError("uazapi indisponível"))
+    alerta = AsyncMock()
+    with (
+        patch("app.workers.processar_mensagem._processar_mensagem_recebida_async", execucao),
+        patch.object(processar_mensagem_recebida, "max_retries", 0),
+        patch("app.workers.processar_mensagem._BACKOFF_BASE_SEGUNDOS", 0),
+        patch("app.workers.processar_mensagem.enviar_alerta", alerta),
+        pytest.raises(RuntimeError, match="uazapi indisponível"),
+    ):
+        processar_mensagem_recebida.apply(args=args).get()
+
+    assert alerta.await_count == 1
+    texto, _webhook_url = alerta.await_args.args
+    assert "5511999997777" in texto
+    assert texto_do_cliente not in texto
+
+
 async def test_fecha_o_canal_mesmo_quando_processamento_falha() -> None:
     # Regressão: UazapiProvider mantém um httpx.AsyncClient interno; sem
     # aclose() no finally, cada task vaza uma conexão — inofensivo num

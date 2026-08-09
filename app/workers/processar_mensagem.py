@@ -14,6 +14,7 @@ from app.channels import get_channel_provider
 from app.channels.base import InboundMessage
 from app.core.config import settings
 from app.db.base import SessionLocal
+from app.services.alertas import enviar_alerta
 from app.services.atendimento import processar_mensagem
 from app.workers.celery_app import celery_app
 
@@ -55,7 +56,28 @@ def processar_mensagem_recebida(
                 tenant_id=tenant_id,
                 message_id=message_id,
             )
+            _alertar_falha_definitiva(tenant_id, from_number)
             raise
+
+
+def _alertar_falha_definitiva(tenant_id: str, from_number: str) -> None:
+    # Depois de esgotar as tentativas, o cliente fica sem resposta automática
+    # — sem isso, ninguém no escritório fica sabendo (só existia log). Canal
+    # fora-de-banda (app/services/alertas.py), não pelo próprio WhatsApp: se
+    # o motivo da falha for a instância UAZAPI, o alerta não pode depender
+    # dela. Não inclui o texto da mensagem do cliente (CLAUDE.md §6) — só o
+    # número, pra quem for atender manualmente encontrar a conversa.
+    try:
+        asyncio.run(
+            enviar_alerta(
+                f"🔴 AdvogAI: não conseguimos responder automaticamente ao "
+                f"WhatsApp {from_number} (tenant {tenant_id}) depois de "
+                f"{_MAX_TENTATIVAS} tentativas. Confira e responda manualmente.",
+                settings.alert_webhook_url,
+            )
+        )
+    except Exception as erro:  # noqa: BLE001 — alerta é best-effort (mesmo padrão de app/workers/healthcheck_uazapi.py)
+        logger.error("falha_ao_enviar_alerta_processamento", erro=str(erro))
 
 
 async def _processar_mensagem_recebida_async(

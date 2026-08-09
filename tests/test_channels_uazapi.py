@@ -55,7 +55,7 @@ async def test_send_text_envia_corpo_e_headers_corretos() -> None:
         assert request.url == "https://vrtice.uazapi.com/send/text"
         assert request.headers["token"] == "TOKEN_TESTE"
         corpo = json.loads(request.content)
-        assert corpo == {"number": "5511999998888", "text": "Olá!", "delay": 3000}
+        assert corpo == {"number": "5511999998888", "text": "Olá!"}
         return httpx.Response(200, json={"id": "MSG123"})
 
     message_id = await _provider(handler).send_text("5511999998888", "Olá!")
