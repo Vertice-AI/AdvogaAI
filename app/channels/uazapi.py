@@ -22,6 +22,15 @@ _BACKOFF_BASE_SEGUNDOS = 0.5
 # CLAUDE.md §4.7: intervalo mínimo de 3 a 5s entre envios, com jitter.
 _INTERVALO_MINIMO_SEGUNDOS = 3.0
 _JITTER_MAXIMO_SEGUNDOS = 2.0
+# Suspeita em teste (2026-08-09): ReadTimeout de 10.3s reproduz 100% das
+# vezes quando send_text responde a uma mensagem que ACABOU de chegar via
+# webhook real — nunca reproduz em envio isolado/sintético (mesmo número,
+# mesmo código). Terceiros documentam um campo "delay" (ms) no /send/text de
+# APIs Baileys-like que mostra "digitando..." e parece desacoplar o envio
+# síncrono do processamento interno da instância — não confirmado na doc
+# oficial (SPA em JS, sem acesso a navegador nesta investigação). Testando
+# como mitigação; se não resolver, reverter (CLAUDE.md §8).
+_DELAY_DIGITACAO_MS = 3000
 # Chave usada dentro do dict `headers` de verify_signature — não é um header
 # HTTP literal da UAZAPI (ela não assina as chamadas que faz ao nosso
 # webhook). Quem registra o webhook embute esse valor antes de chamar
@@ -82,7 +91,9 @@ class UazapiProvider:
         async with self._lock_de_envio():
             await self._respeitar_rate_limit()
             resposta = await self._chamar_com_retry(
-                "POST", "/send/text", {"number": to, "text": text}
+                "POST",
+                "/send/text",
+                {"number": to, "text": text, "delay": _DELAY_DIGITACAO_MS},
             )
         return _extrair_message_id(resposta)
 
