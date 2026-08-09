@@ -9,13 +9,18 @@ não resolveu o timeout).
 
 import asyncio
 import time
+import uuid
 
 import structlog
+from sqlalchemy import select
 
 from app.agents.atendimento import AtendimentoAgent
 from app.agents.processual import AnthropicMessagesClient
 from app.channels.uazapi import UazapiProvider
 from app.core.config import settings
+from app.db.base import SessionLocal
+from app.db.models import Cliente
+from app.db.rls import definir_tenant
 from app.workers.celery_app import celery_app
 
 logger = structlog.get_logger()
@@ -49,6 +54,49 @@ async def _diagnosticar_envio_async(numero: str) -> None:
             duracao=f"{duracao:.2f}s",
         )
     finally:
+        await provider.aclose()
+
+
+@celery_app.task(name="workers.diagnosticar_envio_com_db")
+def diagnosticar_envio_com_db(numero: str, tenant_id: str) -> None:
+    asyncio.run(_diagnosticar_envio_com_db_async(numero, tenant_id))
+
+
+async def _diagnosticar_envio_com_db_async(numero: str, tenant_id: str) -> None:
+    # Isola a outra suspeita que sobrou depois de diagnosticar_envio_com_agent
+    # (deu sucesso em 1.30s — não é o AtendimentoAgent): o fluxo real
+    # (_processar_mensagem_recebida_async → _enviar_saudacao) abre uma Session
+    # síncrona do SQLAlchemy, roda definir_tenant (SET LOCAL, dentro de
+    # transação aberta) e um SELECT, e só DEPOIS chama send_text — sem
+    # commitar/fechar a sessão antes do envio. Aqui reproduzimos exatamente
+    # essa sequência pra ver se a sessão/transação aberta é o que trava o
+    # ReadTimeout na UAZAPI.
+    provider = UazapiProvider(
+        base_url=settings.uazapi_base_url,
+        token=settings.uazapi_token,
+        webhook_secret=settings.uazapi_webhook_secret,
+        redis_url=settings.redis_url,
+    )
+    session = SessionLocal()
+    inicio = time.monotonic()
+    try:
+        definir_tenant(session, uuid.UUID(tenant_id))
+        session.scalar(select(Cliente).where(Cliente.tenant_id == uuid.UUID(tenant_id)).limit(1))
+        message_id = await provider.send_text(numero, "diagnóstico com sessão de DB aberta")
+        duracao = time.monotonic() - inicio
+        logger.warning(
+            "diagnostico_envio_com_db_sucesso", message_id=message_id, duracao=f"{duracao:.2f}s"
+        )
+    except Exception as erro:  # noqa: BLE001 — task de diagnóstico, quer ver qualquer falha
+        duracao = time.monotonic() - inicio
+        logger.warning(
+            "diagnostico_envio_com_db_falhou",
+            tipo=type(erro).__name__,
+            erro=str(erro),
+            duracao=f"{duracao:.2f}s",
+        )
+    finally:
+        session.close()
         await provider.aclose()
 
 
