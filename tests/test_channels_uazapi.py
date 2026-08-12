@@ -199,6 +199,81 @@ async def test_parse_webhook_mensagem_do_proprio_numero_marca_from_me() -> None:
     assert inbound.from_me is True
 
 
+async def test_send_text_normaliza_o_numero_antes_de_enviar() -> None:
+    # Número cadastrado à mão costuma vir com o nono dígito; o WhatsApp usa a
+    # forma sem ele nos DDDs a partir de 31. Normalizar na saída mantém as duas
+    # pontas coerentes com o que o webhook entrega.
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content)["number"] == "558194065983"
+        return httpx.Response(200, json={"id": "MSG123"})
+
+    provider = _provider(handler)
+    assert await provider.send_text("5581994065983", "Olá!") == "MSG123"
+    await provider.aclose()
+
+
+async def test_parse_webhook_ignora_lid_do_sender_e_usa_o_telefone_do_chatid() -> None:
+    # Regressão da causa raiz de 6 dias de ReadTimeout em produção (2026-08-12):
+    # o WhatsApp passou a mandar `sender` como LID (identificador anônimo), e o
+    # código antigo cortava o sufixo do JID e mandava esse ID como se fosse
+    # telefone. A UAZAPI travava 10s tentando resolver um número inexistente e
+    # o cliente nunca recebia resposta.
+    payload = {
+        "EventType": "messages",
+        "instanceName": "inst-123",
+        "message": {
+            "sender": "107687866007737@lid",
+            "chatid": "5581994065983@s.whatsapp.net",
+            "text": "oi",
+            "messageid": "3EB05354A5",
+            "messageTimestamp": 1752192000000,
+            "fromMe": False,
+        },
+    }
+
+    inbound = _provider(lambda r: httpx.Response(200)).parse_webhook(payload)
+
+    assert inbound.from_number == "558194065983"
+
+
+async def test_parse_webhook_sem_telefone_roteavel_levanta_erro() -> None:
+    # Falha alto em vez de devolver o LID: melhor o webhook registrar payload
+    # inesperado do que travar em silêncio no envio.
+    payload = {
+        "EventType": "messages",
+        "instanceName": "inst-123",
+        "message": {
+            "sender": "107687866007737@lid",
+            "chatid": "107687866007737@lid",
+            "text": "oi",
+            "messageid": "3EB05354A5",
+            "messageTimestamp": 1752192000000,
+            "fromMe": False,
+        },
+    }
+
+    with pytest.raises(ValueError, match="sem telefone roteável"):
+        _provider(lambda r: httpx.Response(200)).parse_webhook(payload)
+
+
+async def test_parse_webhook_recusa_mensagem_de_grupo() -> None:
+    payload = {
+        "EventType": "messages",
+        "instanceName": "inst-123",
+        "message": {
+            "sender": "5511999998888@s.whatsapp.net",
+            "chatid": "120363000000000000@g.us",
+            "text": "oi",
+            "messageid": "3EB0GRUPO",
+            "messageTimestamp": 1752192000000,
+            "fromMe": False,
+        },
+    }
+
+    with pytest.raises(ValueError, match="grupo"):
+        _provider(lambda r: httpx.Response(200)).parse_webhook(payload)
+
+
 async def test_parse_webhook_evento_diferente_de_messages_levanta_erro() -> None:
     payload = {
         "EventType": "connection",

@@ -1,7 +1,6 @@
 import asyncio
 import hmac
 import random
-import re
 import time
 from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
@@ -13,8 +12,14 @@ import redis.asyncio as aioredis
 import structlog
 
 from app.channels.base import InboundMessage, MessageId
+from app.core.telefone import normalizar_numero
 
 logger = structlog.get_logger()
+
+# Sufixos de JID do WhatsApp. `@lid` (LinkedID, identificador anônimo) não
+# entra aqui de propósito — ver _numero_do_contato.
+_SUFIXO_TELEFONE = "@s.whatsapp.net"
+_SUFIXO_GRUPO = "@g.us"
 
 _TIMEOUT_SEGUNDOS = 10.0
 _MAX_TENTATIVAS = 3
@@ -81,8 +86,10 @@ class UazapiProvider:
     async def send_text(self, to: str, text: str) -> MessageId:
         async with self._lock_de_envio():
             await self._respeitar_rate_limit()
+            # Normaliza também na saída: garante forma canônica mesmo se o
+            # número vier de cadastro digitado à mão, não só do webhook.
             resposta = await self._chamar_com_retry(
-                "POST", "/send/text", {"number": to, "text": text}
+                "POST", "/send/text", {"number": normalizar_numero(to), "text": text}
             )
         return _extrair_message_id(resposta)
 
@@ -110,12 +117,10 @@ class UazapiProvider:
             # trata tudo como payload malformado/inesperado com um único except ValueError.
             raise ValueError("payload de webhook sem campo 'message'")  # noqa: TRY004
 
-        numero = _extrair_numero(str(dados.get("sender") or dados.get("chatid") or ""))
+        numero = _numero_do_contato(dados)
         timestamp_ms = dados.get("messageTimestamp")
-        if not numero or timestamp_ms is None:
-            raise ValueError(
-                "payload de webhook incompleto (sender/chatid ou messageTimestamp ausente)"
-            )
+        if timestamp_ms is None:
+            raise ValueError("payload de webhook incompleto (messageTimestamp ausente)")
 
         return InboundMessage(
             from_number=numero,
@@ -243,8 +248,36 @@ def _extrair_message_id(resposta: dict[str, Any]) -> MessageId:
     return str(message_id)
 
 
-def _extrair_numero(jid: str) -> str:
-    return re.sub(r"@.*$", "", jid)
+def _numero_do_contato(dados: dict[str, Any]) -> str:
+    """Telefone do contato da conversa, em forma canônica.
+
+    A ordem importa e custou caro. O campo `sender` pode vir como LID
+    (`107687866007737@lid`) — o identificador anônimo que o WhatsApp adotou por
+    privacidade. Ele NÃO é telefone e não é roteável: mandar `/send/text` pra
+    ele faz a UAZAPI travar até estourar o timeout, sem erro nenhum (causa raiz
+    de 6 dias de ReadTimeout intermitente, achada em produção em 2026-08-12 —
+    o código antigo cortava o sufixo do JID e tratava o LID como telefone).
+
+    Por isso o `chatid` vem primeiro: numa conversa 1:1 ele carrega o telefone
+    real. Isso também é o correto para mensagens do próprio advogado
+    (`fromMe`), em que `sender` é o número da instância e `chatid` é a conversa
+    do cliente — que é justamente a que o comando `/ia` precisa reativar.
+
+    Sem nenhum JID de telefone, levanta ValueError em vez de devolver algo não
+    roteável: a rota de webhook trata como payload inesperado e registra log,
+    o que falha alto em vez de travar em silêncio.
+    """
+    chatid = str(dados.get("chatid") or "")
+    sender = str(dados.get("sender") or "")
+    if chatid.endswith(_SUFIXO_GRUPO):
+        # Fase Solo atende só conversa 1:1 — grupo não tem "o cliente" a
+        # identificar (CLAUDE.md §4.6) e o JID de grupo não é destinatário
+        # válido pra resposta individual.
+        raise ValueError("mensagem de grupo não é atendida nesta fase")
+    for jid in (chatid, sender):
+        if jid.endswith(_SUFIXO_TELEFONE):
+            return normalizar_numero(jid)
+    raise ValueError(f"webhook sem telefone roteável (chatid={chatid!r}, sender={sender!r})")
 
 
 @asynccontextmanager
