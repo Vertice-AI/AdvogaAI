@@ -511,7 +511,12 @@ async def test_comando_ia_do_proprio_numero_reativa_ia(db_engine: Engine) -> Non
             session, channel, _agent(), tenant_id, _inbound("/ia", from_me=True)
         )
 
-    assert channel.enviados == []  # comando não gera resposta ao cliente
+    # Confirma no chat: sem isso o advogado não tinha sinal nenhum de que o
+    # comando pegou (a reativação é invisível por natureza).
+    assert len(channel.enviados) == 1
+    destino, texto = channel.enviados[0]
+    assert destino == _NUMERO
+    assert "reativado" in texto.lower()
 
     with Session(db_engine, expire_on_commit=False) as session:
         definir_tenant(session, tenant_id)

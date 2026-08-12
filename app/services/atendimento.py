@@ -21,6 +21,10 @@ logger = structlog.get_logger()
 
 _COMANDO_REATIVAR_IA = "/ia"
 _MENU_TEXTO = "\n\n1) Consultar atualização do meu processo\n2) Falar com o advogado"
+# Lido pelo advogado (confirmação de que o comando pegou) e pelo cliente
+# (explica o "/ia" que ele acabou de ver no chat) — por isso não menciona
+# comando nem detalhe interno.
+_TEXTO_IA_REATIVADA = "Assistente automático reativado nesta conversa." + _MENU_TEXTO
 
 
 async def processar_mensagem(
@@ -33,7 +37,7 @@ async def processar_mensagem(
     definir_tenant(session, tenant_id)
 
     if inbound.from_me:
-        await _processar_mensagem_do_advogado(session, tenant_id, inbound)
+        await _processar_mensagem_do_advogado(session, channel, tenant_id, inbound)
         return
 
     advogado = advogado_por_numero(session, tenant_id, inbound.from_number)
@@ -97,7 +101,7 @@ async def processar_mensagem(
 
 
 async def _processar_mensagem_do_advogado(
-    session: Session, tenant_id: uuid.UUID, inbound: InboundMessage
+    session: Session, channel: ChannelProvider, tenant_id: uuid.UUID, inbound: InboundMessage
 ) -> None:
     if inbound.text.strip().lower() != _COMANDO_REATIVAR_IA:
         return
@@ -105,6 +109,12 @@ async def _processar_mensagem_do_advogado(
     estado.atendimento_humano_desde = None
     session.commit()
     logger.info("ia_reativada", tenant_id=str(tenant_id), numero=inbound.from_number)
+    # Confirma no próprio chat: reativar a IA não produzia nenhum sinal visível,
+    # e o advogado ficava sem saber se o comando pegou (achado testando em
+    # produção, 2026-08-12). Vai pra conversa onde o comando foi digitado — que
+    # é a que foi reativada — então o cliente também lê. Isso é proposital: ele
+    # acabou de ver um "/ia" solto no chat, e a confirmação explica o que houve.
+    await channel.send_text(inbound.from_number, _TEXTO_IA_REATIVADA)
 
 
 def _obter_ou_criar_conversa_estado(
