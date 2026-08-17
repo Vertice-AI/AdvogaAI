@@ -1,7 +1,6 @@
 import asyncio
 import hmac
 import random
-import time
 from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import UTC, datetime
@@ -190,31 +189,21 @@ class UazapiProvider:
     async def _chamar_com_retry(
         self, metodo: str, path: str, corpo: dict[str, Any] | None
     ) -> dict[str, Any]:
-        # Log de timing temporário — investigação do ReadTimeout intermitente
-        # que só aparece no fluxo real (processar_mensagem_recebida), nunca
-        # na task de diagnóstico isolada (mesmo código, mesmo processo). Os
-        # timestamps do Railway chegam fora de ordem (log buffering), então
-        # a duração aqui é medida com time.monotonic() no próprio processo —
-        # dado confiável independente da ordem de entrega do log. Remover
-        # depois que o bug for identificado (CLAUDE.md §8).
         url = f"{self._base_url}{path}"
         for tentativa in range(_MAX_TENTATIVAS):
             ultima_tentativa = tentativa == _MAX_TENTATIVAS - 1
-            inicio = time.monotonic()
             try:
                 resposta = await self._client.request(
                     metodo, url, json=corpo, headers=self._headers()
                 )
                 resposta.raise_for_status()
-                logger.warning(
-                    "uazapi_tentativa_ok",
-                    metodo=metodo,
-                    path=path,
-                    tentativa=tentativa,
-                    duracao=f"{time.monotonic() - inicio:.2f}s",
-                )
                 return cast(dict[str, Any], resposta.json())
             except httpx.HTTPStatusError as erro:
+                # Só a tentativa que falha vira log: uma que dá certo depois de
+                # uma falha some sem deixar rastro, e a instância cair é
+                # esperado (CLAUDE.md §4.7). Sem duração e sem corpo da
+                # requisição — o log de timing da caça ao ReadTimeout saiu com
+                # o bug resolvido (causa raiz em app/channels/uazapi.py, LID).
                 logger.warning(
                     "uazapi_tentativa_falhou",
                     metodo=metodo,
@@ -222,7 +211,6 @@ class UazapiProvider:
                     tentativa=tentativa,
                     tipo="HTTPStatusError",
                     status=erro.response.status_code,
-                    duracao=f"{time.monotonic() - inicio:.2f}s",
                 )
                 if erro.response.status_code < 500 or ultima_tentativa:
                     raise
@@ -233,7 +221,6 @@ class UazapiProvider:
                     path=path,
                     tentativa=tentativa,
                     tipo=type(erro).__name__,
-                    duracao=f"{time.monotonic() - inicio:.2f}s",
                 )
                 if ultima_tentativa:
                     raise

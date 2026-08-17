@@ -26,8 +26,9 @@ def sincronizar_processos() -> None:
 
 async def sincronizar_todos_os_tenants() -> None:
     provider = get_process_provider()
+    client = AnthropicMessagesClient(settings.anthropic_api_key)
     agent = ProcessualAgent(
-        client=AnthropicMessagesClient(settings.anthropic_api_key),
+        client=client,
         haiku_model=settings.haiku_model,
         sonnet_model=settings.sonnet_model,
     )
@@ -41,6 +42,7 @@ async def sincronizar_todos_os_tenants() -> None:
             await sincronizar_tenant(session, provider, agent, tenant)
     finally:
         session.close()
+        await client.aclose()
 
 
 async def sincronizar_tenant(

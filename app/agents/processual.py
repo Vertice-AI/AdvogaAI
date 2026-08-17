@@ -66,6 +66,14 @@ class AnthropicMessagesClient:
             api_key=api_key, timeout=_TIMEOUT_SEGUNDOS, max_retries=_MAX_TENTATIVAS
         )
 
+    async def aclose(self) -> None:
+        # Mesmo vazamento já corrigido no UazapiProvider em 1038247: o SDK abre
+        # um httpx.AsyncClient que ninguém fecha. Cada task do Celery roda seu
+        # próprio asyncio.run(), e o loop morre antes do cliente — daí o
+        # "Event loop is closed" no log do worker, e as conexões acumulando num
+        # processo de vida longa. Quem cria, fecha.
+        await self._client.close()
+
     async def create_message(self, *, system: str, user: str, model: str, max_tokens: int) -> str:
         resposta = await self._client.messages.create(
             model=model,

@@ -102,10 +102,8 @@ async def _processar_mensagem_recebida_async(
     from_me: bool,
 ) -> None:
     channel = get_channel_provider()
-    agent = AtendimentoAgent(
-        client=AnthropicMessagesClient(settings.anthropic_api_key),
-        haiku_model=settings.haiku_model,
-    )
+    client = AnthropicMessagesClient(settings.anthropic_api_key)
+    agent = AtendimentoAgent(client=client, haiku_model=settings.haiku_model)
     inbound = InboundMessage(
         from_number=from_number,
         text=text,
@@ -122,3 +120,4 @@ async def _processar_mensagem_recebida_async(
     finally:
         session.close()
         await channel.aclose()
+        await client.aclose()
