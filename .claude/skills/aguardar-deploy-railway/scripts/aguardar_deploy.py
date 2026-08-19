@@ -32,7 +32,8 @@ _STATUS_FINAL_RUIM = {"FAILED", "CRASHED", "REMOVED", "SKIPPED"}
 
 
 def _rodar(comando: list[str]) -> str:
-    resultado = subprocess.run(comando, capture_output=True, text=True)
+    # check=False: o returncode é tratado logo abaixo, com a mensagem do stderr.
+    resultado = subprocess.run(comando, capture_output=True, text=True, check=False)
     if resultado.returncode != 0:
         raise RuntimeError(f"{' '.join(comando)} falhou: {resultado.stderr.strip()}")
     return resultado.stdout
@@ -96,8 +97,7 @@ def main() -> int:
         time.sleep(args.interval)
 
     print(
-        f"esgotou {args.max_checks} tentativas; ainda pendente(s): "
-        f"{', '.join(sorted(pendentes))}",
+        f"esgotou {args.max_checks} tentativas; ainda pendente(s): {', '.join(sorted(pendentes))}",
         file=sys.stderr,
     )
     return 1

@@ -21,6 +21,15 @@ seed — é o tenant que a instância da UAZAPI aponta):
     PYTHONPATH=. python scripts/seed_teste.py --tenant-id <uuid> \
         --cliente-nome "João" --cliente-whatsapp 5511988888888 \
         --processo-numero "0000832-35.2018.4.01.3202" --tribunal-alias trf1
+
+Pra pendurar mais um processo num cliente que já existe, basta repetir com o
+mesmo --cliente-whatsapp (o número é a identidade; o nome só é exigido quando
+o cliente é novo):
+    PYTHONPATH=. python scripts/seed_teste.py --tenant-id <uuid> \
+        --cliente-whatsapp 5511988888888 \
+        --processo-numero "0001234-56.2019.8.17.0001" --tribunal-alias tjpe
+
+Rodar duas vezes o mesmo processo não duplica nada.
 """
 
 import argparse
@@ -44,26 +53,12 @@ def main() -> None:
 
         cliente_id = None
         processo_numero = None
-        if args.cliente_nome:
-            cliente = Cliente(
-                tenant_id=tenant_id,
-                nome=args.cliente_nome,
-                whatsapp_numero=normalizar_numero(args.cliente_whatsapp),
-            )
-            session.add(cliente)
-            session.flush()
+        if args.cliente_whatsapp:
+            cliente = _resolver_cliente(session, tenant_id, args)
             cliente_id = cliente.id
 
             if args.processo_numero:
-                processo = Processo(
-                    tenant_id=tenant_id,
-                    cliente_id=cliente.id,
-                    numero=args.processo_numero,
-                    tribunal_alias=args.tribunal_alias,
-                    advogado_responsavel_id=advogado.id,
-                )
-                session.add(processo)
-                session.flush()
+                processo = _resolver_processo(session, tenant_id, cliente, advogado, args)
                 processo_numero = processo.numero
 
         session.commit()
@@ -77,6 +72,55 @@ def main() -> None:
             print(f"processo: {processo_numero}")
     finally:
         session.close()
+
+
+def _resolver_cliente(session: Session, tenant_id: uuid.UUID, args: argparse.Namespace) -> Cliente:
+    """O cliente que já existe com aquele número, ou um novo.
+
+    Reaproveitar é o caso normal a partir do segundo processo: `cliente` tem
+    unique em (tenant_id, whatsapp_numero), então criar de novo estouraria a
+    constraint — e um cliente com vários processos não é exceção, é o caso
+    comum de verdade.
+    """
+    numero = normalizar_numero(args.cliente_whatsapp)
+    cliente = session.scalar(
+        select(Cliente).where(Cliente.tenant_id == tenant_id, Cliente.whatsapp_numero == numero)
+    )
+    if cliente is not None:
+        return cliente
+    if not args.cliente_nome:
+        raise SystemExit(f"cliente novo ({numero}) exige --cliente-nome")
+    cliente = Cliente(tenant_id=tenant_id, nome=args.cliente_nome, whatsapp_numero=numero)
+    session.add(cliente)
+    session.flush()
+    return cliente
+
+
+def _resolver_processo(
+    session: Session,
+    tenant_id: uuid.UUID,
+    cliente: Cliente,
+    advogado: Advogado,
+    args: argparse.Namespace,
+) -> Processo:
+    """Idempotente por (cliente, número): rodar duas vezes não duplica."""
+    processo = session.scalar(
+        select(Processo).where(
+            Processo.cliente_id == cliente.id, Processo.numero == args.processo_numero
+        )
+    )
+    if processo is not None:
+        return processo
+    processo = Processo(
+        tenant_id=tenant_id,
+        cliente_id=cliente.id,
+        numero=args.processo_numero,
+        tribunal_alias=args.tribunal_alias,
+        advogado_responsavel_id=advogado.id,
+    )
+    session.add(processo)
+    session.flush()
+    return processo
 
 
 def _resolver_tenant_e_advogado(
@@ -144,6 +188,8 @@ def _parse_args() -> argparse.Namespace:
             parser.error(f"obrigatório sem --tenant-id: {', '.join(faltando)}")
     if args.cliente_nome and not args.cliente_whatsapp:
         parser.error("--cliente-whatsapp é obrigatório junto de --cliente-nome")
+    if args.processo_numero and not args.cliente_whatsapp:
+        parser.error("--cliente-whatsapp é obrigatório junto de --processo-numero")
     if args.processo_numero and not args.tribunal_alias:
         parser.error("--tribunal-alias é obrigatório junto de --processo-numero")
     return args
