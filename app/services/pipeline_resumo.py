@@ -58,9 +58,12 @@ async def processar_movimento(
             decisao=DecisaoEnvio.BLOCKED,
         )
 
+    # `legivel=False` ganha do nível de autonomia de propósito: se não deu pra
+    # interpretar a classificação, ninguém decidiu que aquilo era relevante —
+    # e o que ninguém decidiu não vai sozinho pro cliente (CLAUDE.md §2).
     decisao = (
         DecisaoEnvio.AUTO_SEND
-        if nivel_autonomia == NivelAutonomia.AUTOMATICO
+        if nivel_autonomia == NivelAutonomia.AUTOMATICO and classificacao.legivel
         else DecisaoEnvio.NEEDS_APPROVAL
     )
     return ResultadoPipeline(

@@ -86,16 +86,33 @@ async def sincronizar_processo(
     movimentos_brutos = await provider.buscar_movimentos(processo.numero, processo.tribunal_alias)
     movimentos_novos = filtrar_movimentos_novos(session, processo.id, movimentos_brutos)
 
+    processados = 0
     for movimento_bruto in movimentos_novos:
-        await processar_e_persistir_movimento(
-            movimento_bruto, agent, nivel_autonomia, session, tenant_id, processo.id
-        )
+        try:
+            await processar_e_persistir_movimento(
+                movimento_bruto, agent, nivel_autonomia, session, tenant_id, processo.id
+            )
+            processados += 1
+        except Exception:  # noqa: BLE001 — isola falha de 1 movimento sem perder os outros do processo
+            # Sem isso, um movimento ruim derrubava o processo inteiro: foi o
+            # que aconteceu em 2026-08-22, quando a cerca de markdown na
+            # resposta do classificador (ver _interpretar_relevancia) fez os 11
+            # movimentos de cada processo se perderem por causa do primeiro.
+            # Não faz rollback: erro de LLM/parsing não invalida a transação, e
+            # os movimentos já processados devem ser preservados. Erro de banco
+            # de verdade continua subindo no commit, pro handler do tenant.
+            logger.error(
+                "sync_movimento_falhou",
+                tenant_id=str(tenant_id),
+                processo_id=str(processo.id),
+            )
     session.commit()
     logger.info(
         "sync_processo_concluido",
         tenant_id=str(tenant_id),
         processo_id=str(processo.id),
         movimentos_novos=len(movimentos_novos),
+        movimentos_processados=processados,
     )
 
 

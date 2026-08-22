@@ -22,18 +22,33 @@ def _carregar_fixture(nome: str) -> dict[str, str]:
 
 
 class _FakeAnthropicClient:
-    def __init__(self, relevante: bool, resumo: str) -> None:
-        self._relevante = relevante
+    """Devolve a resposta CRUA do classificador, não o dict já interpretado.
+
+    Um fake que sempre devolvia JSON limpo foi o que deixou passar a cerca de
+    markdown até produção (2026-08-22) — o mesmo erro de fake que `ccb15d2`
+    já tinha corrigido no classificador de intenção.
+    """
+
+    def __init__(self, resposta_relevancia: str, resumo: str) -> None:
+        self._resposta_relevancia = resposta_relevancia
         self._resumo = resumo
 
     async def create_message(self, *, system: str, user: str, model: str, max_tokens: int) -> str:
         if model == "haiku-fake":
-            return json.dumps({"relevante": self._relevante, "motivo": "fixture de teste"})
+            return self._resposta_relevancia
         return self._resumo
 
 
+def _resposta_relevancia(relevante: bool) -> str:
+    return json.dumps({"relevante": relevante, "motivo": "fixture de teste"})
+
+
 def _agent(relevante: bool, resumo: str) -> ProcessualAgent:
-    client = _FakeAnthropicClient(relevante=relevante, resumo=resumo)
+    return _agent_com_resposta(_resposta_relevancia(relevante), resumo)
+
+
+def _agent_com_resposta(resposta_relevancia: str, resumo: str) -> ProcessualAgent:
+    client = _FakeAnthropicClient(resposta_relevancia=resposta_relevancia, resumo=resumo)
     return ProcessualAgent(client, haiku_model="haiku-fake", sonnet_model="sonnet-fake")
 
 
@@ -169,3 +184,46 @@ async def test_processar_e_persistir_grava_movimento_irrelevante_sem_resumo(db_e
         assert not do_banco.relevante
         assert do_banco.resumo is None
         assert do_banco.decisao == DecisaoEnvio.BLOCKED.value
+
+
+_RESUMO_AUDIENCIA = (
+    "Em 05/08/2026, foi designada audiência de conciliação por "
+    "videoconferência para o seu processo."
+)
+
+
+async def test_classificacao_em_cerca_de_markdown_e_interpretada():
+    # Formato real observado em produção (2026-08-22): o Haiku embrulha o JSON
+    # em ```json ... ```, e o json.loads direto derrubava o sync do processo.
+    movimento_bruto = _carregar_fixture("audiencia_marcada.json")
+    resposta = '```json\n{"relevante": true, "motivo": "audiência designada"}\n```'
+    agent = _agent_com_resposta(resposta, _RESUMO_AUDIENCIA)
+
+    resultado = await processar_movimento(movimento_bruto, agent, NivelAutonomia.APROVACAO_MANUAL)
+
+    assert resultado.relevante
+    assert resultado.decisao == DecisaoEnvio.NEEDS_APPROVAL
+
+
+async def test_classificacao_com_prosa_em_volta_e_interpretada():
+    movimento_bruto = _carregar_fixture("conclusao_interna.json")
+    resposta = 'Claro! Segue:\n{"relevante": false, "motivo": "trâmite interno"}\nAté mais.'
+    agent = _agent_com_resposta(resposta, "não deveria ser usado")
+
+    resultado = await processar_movimento(movimento_bruto, agent, NivelAutonomia.APROVACAO_MANUAL)
+
+    assert not resultado.relevante
+    assert resultado.decisao == DecisaoEnvio.BLOCKED
+
+
+async def test_classificacao_ilegivel_vai_para_revisao_humana_mesmo_em_modo_automatico():
+    # Ilegível não é "irrelevante": descartar em silêncio esconderia do cliente
+    # uma audiência marcada. Vai pra revisão humana ainda que a autonomia seja
+    # automática — o que ninguém classificou não sai sozinho pro cliente.
+    movimento_bruto = _carregar_fixture("audiencia_marcada.json")
+    agent = _agent_com_resposta("desculpe, não consegui analisar", _RESUMO_AUDIENCIA)
+
+    resultado = await processar_movimento(movimento_bruto, agent, NivelAutonomia.AUTOMATICO)
+
+    assert resultado.relevante
+    assert resultado.decisao == DecisaoEnvio.NEEDS_APPROVAL
