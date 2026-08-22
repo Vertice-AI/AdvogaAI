@@ -13,6 +13,10 @@ logger = structlog.get_logger()
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 _TIMEOUT_SEGUNDOS = 30.0
 _MAX_TENTATIVAS = 3
+# `max_tokens` limita thinking + texto no mesmo orçamento, e o claude-sonnet-5
+# pensa por padrão. Os 400 que bastavam para um resumo de 2 a 3 frases seriam
+# gastos pensando, devolvendo resposta vazia ou cortada no meio.
+_MAX_TOKENS_RESUMO = 4000
 
 
 class AnthropicClient(Protocol):
@@ -56,7 +60,7 @@ class ProcessualAgent:
             system=self._prompt_resumo,
             user=_montar_input_movimento(movimento),
             model=self._sonnet_model,
-            max_tokens=400,
+            max_tokens=_MAX_TOKENS_RESUMO,
         )
 
 
@@ -84,10 +88,17 @@ class AnthropicMessagesClient:
             system=system,
             messages=[{"role": "user", "content": user}],
         )
-        bloco = resposta.content[0]
-        if bloco.type != "text":
-            raise ValueError(f"resposta inesperada do modelo: bloco do tipo {bloco.type!r}")
-        return bloco.text
+        # Percorre os blocos em vez de assumir content[0]: no claude-sonnet-5 o
+        # thinking vem LIGADO por padrão (ao contrário do sonnet-4.6), então o
+        # primeiro bloco é `thinking` e o texto vem depois. Assumir a posição
+        # derrubou o resumo de todos os movimentos relevantes em produção
+        # (2026-08-22) — e derrubaria de novo a cada modelo que introduza um
+        # bloco novo antes do texto.
+        for bloco in resposta.content:
+            if bloco.type == "text":
+                return bloco.text
+        tipos = [bloco.type for bloco in resposta.content]
+        raise ValueError(f"resposta do modelo sem bloco de texto: {tipos}")
 
 
 def _interpretar_relevancia(resposta: str) -> RelevanciaClassificacao:
